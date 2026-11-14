@@ -4,7 +4,7 @@
 
 ## Windows-сборка
 
-- **Node.js runtime.** В `Ryadom-Windows.exe` встроен Node.js (неизменённый бинарник); серверная часть — `server.cjs`. Node.js распространяется по лицензии MIT и включает компоненты под другими свободными лицензиями (V8, OpenSSL, ICU и др.). Полный текст лицензий — в файле [`Node-LICENSE.txt`](https://github.com/parxomenkoevgenii/ryadom/releases) в составе выпуска и в репозитории Node.js: <https://github.com/nodejs/node/blob/main/LICENSE>.
+- **Node.js runtime.** В `Ryadom-Windows.exe` встроен Node.js (неизменённый бинарник); серверная часть — `server.cjs`. Node.js распространяется по лицензии MIT и включает компоненты под другими свободными лицензиями (V8, OpenSSL, ICU и др.). Полный текст лицензий — в файле [`Node-LICENSE.txt`](https://github.com/Eugene-doc/ryadom/releases) в составе выпуска и в репозитории Node.js: <https://github.com/nodejs/node/blob/main/LICENSE>.
 - **.NET Framework / Windows Forms** — системный компонент Windows, отдельно не распространяется.
 
 ## Android-сборка

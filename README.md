@@ -2,7 +2,7 @@
 
 Личный мини-чат для Windows и Android. Обменивайтесь текстом, фото, видео и файлами между своими устройствами в одной домашней сети — без интернета и аккаунтов.
 
-**[Скачать для Windows](https://github.com/parxomenkoevgenii/ryadom/releases/download/v0.2.1/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/parxomenkoevgenii/ryadom/releases/download/v0.2.1/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/parxomenkoevgenii/ryadom/releases/tag/v0.2.1)**
+**[Скачать для Windows](https://github.com/Eugene-doc/ryadom/releases/download/v0.2.1/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/Eugene-doc/ryadom/releases/download/v0.2.1/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/Eugene-doc/ryadom/releases/tag/v0.2.1)**
 
 ## Возможности
 
