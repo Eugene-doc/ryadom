@@ -1,6 +1,6 @@
 {
   "name": "ryadom-lan-chat",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "description": "Личный чат для устройств в одной домашней сети",
   "scripts": {

@@ -34,6 +34,7 @@
    <label for="device-name">Имя этого устройства</label><input id="device-name" maxlength="40" placeholder="Например, мой телефон" autocomplete="off" required>
    <label for="pair-code">Код с главного устройства</label><input id="pair-code" class="code-input" placeholder="0000 0000" inputmode="numeric" autocomplete="one-time-code" maxlength="9" pattern="[0-9 ]{8,9}" required>
    <p class="field-hint">Откройте «Подключить устройство» в чате на компьютере.</p>
+   <p id="join-pending" class="field-hint" hidden>Ожидайте подтверждения на главном устройстве…</p>
    <p id="join-error" class="form-error" role="alert"></p><button id="join-button" class="button primary" type="submit">Подключиться <svg><use href="#i-arrow"/></svg></button>
   </form>
   <div class="join-footer"><svg><use href="#i-lock"/></svg>Без аккаунтов. Без облака. Только свои.</div>
@@ -65,11 +66,13 @@
  </section>
 </div>
 
-<dialog id="settings-dialog" class="settings-dialog"><div class="dialog-head"><div><span class="eyebrow">РЯДОМ · ВЕРСИЯ 0.1.2</span><h2 id="dialog-title">Подключение и устройства</h2></div><button class="icon-button" id="close-settings" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></div><div class="dialog-body">
+<dialog id="settings-dialog" class="settings-dialog"><div class="dialog-head"><div><span class="eyebrow">РЯДОМ · ВЕРСИЯ 0.2.0</span><h2 id="dialog-title">Подключение и устройства</h2></div><button class="icon-button" id="close-settings" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></div><div class="dialog-body">
  <section id="pairing-section"><p class="dialog-intro">Подключите устройства к одному домашнему роутеру: по кабелю или Wi-Fi. На другом устройстве откройте Рядом или адрес ниже в браузере.</p><label>1. Адрес главного устройства</label><div id="server-addresses" class="server-addresses"></div><p id="no-address" class="field-hint" hidden>Подключите главное устройство к роутеру по кабелю или Wi-Fi. Затем откройте это окно снова.</p><label class="pairing-label">2. Код подключения</label><div class="pairing-box"><span id="pairing-code">•••• ••••</span><button class="icon-button" id="copy-code" aria-label="Скопировать код"><svg><use href="#i-copy"/></svg></button></div><div class="pairing-caption"><span id="pairing-expiry"></span><button id="new-code" class="text-button">Новый код</button></div><button id="disable-pairing" class="text-button muted">Завершить подключение новых устройств</button></section>
- <section id="client-info" hidden><div class="info-card"><svg><use href="#i-wifi"/></svg><p>Вы подключены к личному чату. Код для других устройств доступен на главном устройстве.</p></div></section>
+ <section id="client-info" hidden><div class="info-card"><svg><use href="#i-wifi"/></svg><p>Вы подключены к личному чату. Код для других устройств доступен на главном устройстве.</p></div><p id="tls-state" class="field-hint"></p></section>
+ <section id="pending-section" class="settings-section" hidden><h3>Запросы на подключение</h3><div id="pending-list"></div></section>
  <section class="settings-section"><h3>Это устройство</h3><form id="rename-form" class="rename-form"><input id="rename-input" maxlength="40" aria-label="Имя устройства" required><button class="button secondary" type="submit">Сохранить</button></form></section>
  <section class="settings-section"><h3>Подключённые устройства <span id="settings-count"></span></h3><div id="settings-devices"></div></section>
+ <section id="host-security" class="settings-section" hidden><h3>Безопасность</h3><p class="field-hint">Отпечаток сертификата главного: <code id="tls-fingerprint">—</code></p><p class="field-hint" id="storage-info"></p><div class="rename-form"><button id="logout-all" class="button secondary" type="button">Выйти на всех устройствах</button></div><h3>Журнал подключений</h3><div id="host-events"></div></section>
  <section class="privacy-note"><svg><use href="#i-lock"/></svg><p>Файлы хранятся на главном устройстве. Используйте свою доверенную домашнюю сеть: передача внутри неё идёт без сквозного шифрования.</p></section>
  <button id="change-role-button" class="button secondary" hidden>Выбрать главное устройство заново</button><br><button id="logout-button" class="text-button danger">Выйти на этом устройстве</button><button id="stop-button" class="text-button danger" hidden>Выключить чат на всех устройствах</button>
 </div></dialog>

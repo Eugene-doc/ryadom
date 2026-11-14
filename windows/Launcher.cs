@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -18,14 +19,34 @@ namespace Ryadom {
   private readonly NotifyIcon tray;
   private readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
   private readonly List<TcpBridge> bridges=new List<TcpBridge>();
-  private readonly string bridgeKey=Guid.NewGuid().ToString("N")+Guid.NewGuid().ToString("N");
+  private readonly string bridgeKey=NativeKey();
   private readonly RolePicker choice;
   private LanDiscovery discovery;
   private Process host;
   private int tries;
   private bool stopping,ready,firewallChecked;
   private string networkStamp=null;
+  private X509Certificate2 hostCert;
   private const string BaseUrl="http://127.0.0.1:4280/";
+  private static readonly string NativeKeyFile=Path.Combine(Data,"native-key");
+  private static string NativeKey() {
+   try{if(File.Exists(NativeKeyFile)){string key=File.ReadAllText(NativeKeyFile).Trim();if(key.Length==64)return key;}}catch{}
+   string generated=Guid.NewGuid().ToString("N")+Guid.NewGuid().ToString("N");
+   try{Directory.CreateDirectory(Data);File.WriteAllText(NativeKeyFile,generated,new UTF8Encoding(false));}catch{}
+   return generated;
+  }
+  // One-time host login token for the browser; the permanent native key never reaches the command line or URL.
+  private static string RequestHostToken() {
+   var request=(HttpWebRequest)WebRequest.Create(BaseUrl+"api/local/host-token");
+   request.Proxy=null;request.Method="POST";request.Timeout=3000;request.ReadWriteTimeout=3000;request.ContentLength=0;
+   request.Headers["X-Ryadom"]="1";request.Headers["X-Ryadom-Native"]=NativeKey();
+   using(var response=request.GetResponse())using(var reader=new StreamReader(response.GetResponseStream(),Encoding.UTF8)) {
+    string text=reader.ReadToEnd();
+    var match=System.Text.RegularExpressions.Regex.Match(text,"\"token\"\\s*:\\s*\"([0-9a-f]{64})\"");
+    if(!match.Success)throw new IOException("Не удалось получить токен входа");
+    return match.Groups[1].Value;
+   }
+  }
   [STAThread] private static void Main(string[] args) {
    Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);Directory.CreateDirectory(Data);
    if(args.Length>0&&args[0]=="--firewall-check") {
@@ -43,7 +64,7 @@ namespace Ryadom {
    choice=picker;File.WriteAllText(Path.Combine(Data,"desktop-role"),choice.Hosting?"host":"client");if(!choice.Hosting)File.WriteAllText(Path.Combine(Data,"last-target"),choice.Target+":"+choice.TargetPort);
    File.Delete(Path.Combine(Data,"choose-role"));
    tray=new NotifyIcon{Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath),Text=choice.Hosting?"Рядом · главное устройство":"Рядом · подключён к чату"};
-   var menu=new ContextMenuStrip();menu.Items.Add("Открыть чат",null,(s,e)=>OpenChat(false));if(choice.Hosting){menu.Items.Add("Подключить устройство",null,(s,e)=>OpenChat(true));menu.Items.Add("Проверить брандмауэр и сеть",null,(s,e)=>FirewallAdvisor.ShowReport());}
+   var menu=new ContextMenuStrip();menu.Items.Add("Открыть чат",null,(s,e)=>OpenChat(false));if(choice.Hosting){menu.Items.Add("Подключить устройство",null,(s,e)=>OpenChat(true));menu.Items.Add("Настроить брандмауэр",null,(s,e)=>FirewallAdvisor.Configure(Data));menu.Items.Add("Проверить брандмауэр и сеть",null,(s,e)=>FirewallAdvisor.ShowReport());}
    menu.Items.Add("Выбрать другое главное устройство",null,(s,e)=>{if(!choice.Hosting||MessageBox.Show("Остановить этот чат и выбрать главное устройство заново? История останется на этом компьютере.","Рядом",MessageBoxButtons.OKCancel)==DialogResult.OK)Stop(true);});
    menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Папка с данными",null,(s,e)=>Process.Start("explorer.exe",Data));menu.Items.Add("Выключить Рядом",null,(s,e)=>Stop(false));tray.ContextMenuStrip=menu;tray.DoubleClick+=(s,e)=>OpenChat(false);tray.Visible=true;
    string bin=Path.Combine(Data,"bin");Directory.CreateDirectory(bin);string digest;using(var reader=new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("HostHash")))digest=reader.ReadToEnd().Trim();
@@ -51,9 +72,16 @@ namespace Ryadom {
    if(!File.Exists(executable)){string temp=executable+".tmp";using(var input=Assembly.GetExecutingAssembly().GetManifestResourceStream("Host"))using(var output=File.Create(temp))input.CopyTo(output);File.Move(temp,executable);}
    var start=new ProcessStartInfo(executable){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=Data};
    start.EnvironmentVariables["RYADOM_DATA"]=Data;start.EnvironmentVariables["RYADOM_PORT"]="4280";start.EnvironmentVariables["RYADOM_NO_OPEN"]="1";start.EnvironmentVariables["RYADOM_PARENT_PID"]=Process.GetCurrentProcess().Id.ToString();start.EnvironmentVariables["RYADOM_NATIVE_KEY"]=bridgeKey;start.EnvironmentVariables["RYADOM_LAN_STATE"]=Path.Combine(Data,"lan-state.json");start.EnvironmentVariables["RYADOM_ROLE_SIGNAL"]=Path.Combine(Data,"choose-role");
-   if(choice.Hosting){start.EnvironmentVariables["RYADOM_BRIDGE_PORT"]="4282";RefreshHostNetworks(choice.Networks);}
+   if(choice.Hosting){
+    string fingerprint;
+    hostCert=TlsIdentity.EnsureHostCertificate(Data,out fingerprint);
+    start.EnvironmentVariables["RYADOM_TLS"]="1";
+    start.EnvironmentVariables["RYADOM_TLS_FINGERPRINT"]=fingerprint;
+    start.EnvironmentVariables["RYADOM_BRIDGE_PORT"]="4282";
+    RefreshHostNetworks(choice.Networks);
+   }
    else {
-    var tunnel=new TcpBridge("127.0.0.1",0,c=>{var live=LanInterfaces.Read().FirstOrDefault(n=>n.Contains(choice.Target));if(live==null)throw new IOException("Нет локальной сети");return LanInterfaces.Connect(live,choice.Target,choice.TargetPort);},c=>new byte[0],c=>{});bridges.Add(tunnel);
+    var tunnel=new TcpBridge("127.0.0.1",0,c=>{var live=LanInterfaces.Read().FirstOrDefault(n=>n.Contains(choice.Target));if(live==null)throw new IOException("Нет локальной сети");return LanInterfaces.Connect(live,choice.Target,choice.TargetPort);},c=>new byte[0],c=>{},null,false,null,true,choice.Target,choice.Target+":"+choice.TargetPort,message=>{try{File.AppendAllText(Path.Combine(Data,"network.log"),DateTime.Now+" TLS "+message+Environment.NewLine);}catch{}},TlsIdentity.PinFile);bridges.Add(tunnel);
     start.EnvironmentVariables["RYADOM_ROLE"]="client";start.EnvironmentVariables["RYADOM_TARGET"]="http://"+choice.Target+":"+choice.TargetPort;start.EnvironmentVariables["RYADOM_TUNNEL_PORT"]=tunnel.Port.ToString();
    }
    host=Process.Start(start);timer.Interval=400;timer.Tick+=Tick;timer.Start();
@@ -62,7 +90,7 @@ namespace Ryadom {
    string stamp=string.Join(";",nics.Select(n=>n.Index+":"+n.Address+":"+n.Mask));if(networkStamp==stamp&&File.Exists(Path.Combine(Data,"lan-state.json")))return;
    foreach(var b in bridges)b.Dispose();bridges.Clear();if(discovery!=null){discovery.Dispose();discovery=null;}
    var active=new List<string>();
-   foreach(var nic in nics){try{var local=nic;bridges.Add(new TcpBridge(local.Address,4280,c=>new TcpClient("127.0.0.1",4282),c=>Encoding.ASCII.GetBytes("RYADOM/1 "+bridgeKey+" "+((IPEndPoint)c.Client.RemoteEndPoint).Address+" "+local.Address+"\r\n"),c=>{string peer=((IPEndPoint)c.Client.RemoteEndPoint).Address.ToString();if(!LanInterfaces.Private(peer)||!local.Contains(peer))throw new IOException("Другая подсеть");LanInterfaces.BindOutput(c.Client,local.Index);},socket=>LanInterfaces.BindOutput(socket,local.Index)));active.Add(local.Address);}catch(Exception e){File.AppendAllText(Path.Combine(Data,"network.log"),DateTime.Now+" "+nic.Address+" "+e.Message+Environment.NewLine);}}
+   foreach(var nic in nics){try{var local=nic;bridges.Add(new TcpBridge(local.Address,4280,c=>new TcpClient("127.0.0.1",4282),c=>Encoding.ASCII.GetBytes("RYADOM/1 "+bridgeKey+" "+((IPEndPoint)c.Client.RemoteEndPoint).Address+" "+local.Address+"\r\n"),c=>{string peer=((IPEndPoint)c.Client.RemoteEndPoint).Address.ToString();if(!LanInterfaces.Private(peer)||!local.Contains(peer))throw new IOException("Другая подсеть");LanInterfaces.BindOutput(c.Client,local.Index);},socket=>LanInterfaces.BindOutput(socket,local.Index),true,hostCert));active.Add(local.Address);}catch(Exception e){File.AppendAllText(Path.Combine(Data,"network.log"),DateTime.Now+" "+nic.Address+" "+e.Message+Environment.NewLine);}}
    File.WriteAllText(Path.Combine(Data,"lan-state.json"),"{\"addresses\":["+string.Join(",",active.Select(a=>"\""+a+"\""))+"],\"mode\":\"physical-interface\"}",new UTF8Encoding(false));
    if(active.Count>0)try{discovery=new LanDiscovery(nics.Where(n=>active.Contains(n.Address)).ToList(),Environment.MachineName);}catch{}
    networkStamp=stamp;
@@ -70,10 +98,11 @@ namespace Ryadom {
   private void Tick(object sender,EventArgs args) {
    if(stopping)return;if(File.Exists(Path.Combine(Data,"choose-role"))){File.Delete(Path.Combine(Data,"choose-role"));Stop(true);return;}
    if(ready){if(host.HasExited){Stop(false);return;}if(choice.Hosting){if(!firewallChecked){firewallChecked=true;FirewallAdvisor.Advise(Data);}try{RefreshHostNetworks(LanInterfaces.Read());}catch{}}return;}
-   tries++;try{var request=(HttpWebRequest)WebRequest.Create(BaseUrl+"api/local/status");request.Proxy=null;request.Timeout=300;using(var response=request.GetResponse()){}ready=true;timer.Interval=4000;OpenChat(false);}catch{if(tries>=35||host.HasExited){MessageBox.Show("Не удалось запустить Рядом: порт 4280 занят или локальный доступ заблокирован. Повторите выбор главного устройства.","Рядом");Stop(true);}}
+   tries++;try{var request=(HttpWebRequest)WebRequest.Create(BaseUrl+"api/local/status");request.Proxy=null;request.Timeout=300;request.Headers["X-Ryadom"]="1";request.Headers["X-Ryadom-Native"]=bridgeKey;using(var response=request.GetResponse()){}ready=true;timer.Interval=4000;OpenChat(false);}catch{if(tries>=35||host.HasExited){MessageBox.Show("Не удалось запустить Рядом: порт 4280 занят или локальный доступ заблокирован. Повторите выбор главного устройства.","Рядом");Stop(true);}}
   }
   private static void OpenChat(bool connect) {
-   bool hosting=File.Exists(Path.Combine(Data,"desktop-role"))&&File.ReadAllText(Path.Combine(Data,"desktop-role"))=="host";string url=BaseUrl+(connect?"?connect=1":"");string keyFile=Path.Combine(Data,"host-key");if(hosting&&File.Exists(keyFile))url+="#host="+File.ReadAllText(keyFile).Trim();
+   bool hosting=File.Exists(Path.Combine(Data,"desktop-role"))&&File.ReadAllText(Path.Combine(Data,"desktop-role"))=="host";string url=BaseUrl+(connect?"?connect=1":"");
+   if(hosting)try{url+="#t="+RequestHostToken();}catch(Exception e){try{File.AppendAllText(Path.Combine(Data,"network.log"),DateTime.Now+" host-token "+e.Message+Environment.NewLine);}catch{}}
    string edge=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),"Microsoft","Edge","Application","msedge.exe"),chrome=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),"Google","Chrome","Application","chrome.exe");string browser=File.Exists(edge)?edge:File.Exists(chrome)?chrome:null;
    try{if(browser!=null)Process.Start(new ProcessStartInfo(browser,"--user-data-dir=\""+Path.Combine(Data,"browser")+"\" --no-proxy-server --disable-background-networking --no-first-run --app=\""+url+"\" --window-size=1180,820"){UseShellExecute=true});else Process.Start(url);}catch(Exception e){MessageBox.Show(e.Message,"Рядом");}
   }

@@ -39,6 +39,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Socket;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.net.Proxy;
@@ -102,7 +103,7 @@ public final class MainActivity extends Activity {
   card.addView(text("Адрес указан в разделе «Подключить устройство». ПК может быть подключён кабелем, телефон — по Wi-Fi. Нужна одна подсеть без изоляции клиентов.",11,MUTED));
   errorText=text(error,12,0xffa65042);space(card,12);card.addView(errorText);space(card,12);
   connectButton=new Button(this);connectButton.setText("Подключиться  →");connectButton.setTextSize(14);connectButton.setAllCaps(false);connectButton.setTextColor(Color.WHITE);connectButton.setBackground(box(GREEN,10));card.addView(connectButton,params(-1,dp(49)));connectButton.setOnClickListener(v->connect());
-  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.1  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
+  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.2.0  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
  }
  /** Reject DNS names, public addresses, credentials, paths and ambiguous IPv4 forms. */
  static String validateServer(String value) throws Exception {
@@ -122,7 +123,20 @@ public final class MainActivity extends Activity {
  private void connectClient(){
   final String target;try{target=validateServer(serverInput.getText().toString());}catch(Exception e){errorText.setText(e.getMessage());return;}
   final int generation=screenGeneration;connectButton.setEnabled(false);connectButton.setText("Подключаемся…");errorText.setText("");
-  io.execute(()->{String problem="";HttpURLConnection conn=null;DirectProxy local=null;try{URL remote=new URL(target);LanNetwork network=LanNetwork.select(this,remote.getHost());conn=network.connection(new URL(target+"/api/health"));conn.setConnectTimeout(4500);conn.setReadTimeout(4500);conn.setInstanceFollowRedirects(false);if(conn.getResponseCode()!=200)throw new Exception();ByteArrayOutputStream health=new ByteArrayOutputStream();try(InputStream in=conn.getInputStream()){byte[] b=new byte[512];int n;while((n=in.read(b))!=-1){if(health.size()+n>4096)throw new Exception("Некорректный ответ устройства");health.write(b,0,n);}}String result=new String(health.toByteArray(),java.nio.charset.StandardCharsets.UTF_8);if(!result.contains("\"app\":\"ryadom\""))throw new Exception();local=new DirectProxy(target,(host,port)->LanNetwork.select(this,host).connect(host,port));}catch(Exception e){problem="Нет прямой связи. Проверьте адрес и домашнюю Wi-Fi сеть. На главном устройстве разрешите «Рядом» входящие TCP 4280 и UDP 42800 (брандмауэр, в том числе сторонний: ESET, Kaspersky). Если Happ блокирует обход, добавьте «Рядом» в приложения Direct в Happ.\n"+(e.getMessage()==null?"":e.getMessage());}finally{if(conn!=null)conn.disconnect();}final String failure=problem;final DirectProxy ready=local;runOnUiThread(()->{if(isFinishing()||screenGeneration!=generation){if(ready!=null)ready.close();return;}if(failure.isEmpty()){if(proxy!=null)proxy.close();proxy=ready;base=proxy.base();hosting=false;prefs.edit().putString("server",target).apply();showChat();}else{connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);}});});
+  io.execute(()->{String problem="";DirectProxy local=null;TlsPin.PinMismatch pin=null;try{
+    URL remote=new URL(target);final String host=remote.getHost();final int port=remote.getPort()==-1?4280:remote.getPort();
+    LanNetwork network=LanNetwork.select(this,host);
+    Socket plain=network.connect(host,port);
+    try{TlsTrust.probe(plain,host,port,prefs);}finally{try{plain.close();}catch(Exception ignored){}}
+    local=new DirectProxy(target,(address,number)->TlsTrust.connect(LanNetwork.select(this,address).connect(address,number),address,number,prefs));
+   }catch(TlsPin.PinMismatch e){pin=e;problem=e.getMessage();}
+   catch(Exception e){problem="Нет прямой связи. Проверьте адрес и домашнюю Wi-Fi сеть. На главном устройстве разрешите «Рядом» входящие TCP 4280 и UDP 42800 (брандмауэр, в том числе сторонний: ESET, Kaspersky). Если Happ блокирует обход, добавьте «Рядом» в приложения Direct в Happ.\n"+(e.getMessage()==null?"":e.getMessage());}
+   final String failure=problem;final DirectProxy ready=local;final TlsPin.PinMismatch mismatch=pin;
+   runOnUiThread(()->{if(isFinishing()||screenGeneration!=generation){if(ready!=null)ready.close();return;}if(mismatch!=null){connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);showPinReset(mismatch.address());}else if(failure.isEmpty()){if(proxy!=null)proxy.close();proxy=ready;base=proxy.base();hosting=false;prefs.edit().putString("server",target).apply();showChat();}else{connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);}});});
+ }
+ /** The host was reinstalled or now presents another certificate: offer a deliberate trust reset. */
+ private void showPinReset(final String address){
+  new AlertDialog.Builder(this).setTitle("Сертификат главного устройства изменился").setMessage(TlsPin.CHANGED).setNegativeButton("Отмена",null).setPositiveButton("Сбросить доверие для этого адреса",(dialog,which)->{TlsTrust.reset(prefs,address);connectClient();}).show();
  }
  private void findChats(Button button){button.setEnabled(false);button.setText("Ищем в домашней сети…");final int generation=screenGeneration;io.execute(()->{List<Discovery.Found> found=new ArrayList<>();String problem="";WifiManager.MulticastLock lock=null;try{LanNetwork network=LanNetwork.select(this,null);WifiManager wifi=(WifiManager)getApplicationContext().getSystemService(WIFI_SERVICE);lock=wifi.createMulticastLock("Ryadom search");lock.acquire();List<Integer> prefixes=new ArrayList<>();for(LinkAddress a:network.addresses)prefixes.add(a.getPrefixLength());found=Discovery.find(network.ips(),prefixes,network.network::bindSocket);}catch(Exception e){problem=e.getMessage()==null?"Не удалось найти устройства":e.getMessage();}finally{if(lock!=null&&lock.isHeld())lock.release();}final List<Discovery.Found> results=found;final String error=problem;runOnUiThread(()->{if(isFinishing()||screenGeneration!=generation)return;button.setEnabled(true);button.setText("Найти главное устройство в сети");if(results.isEmpty()){errorText.setText(error.isEmpty()?"Чаты не найдены. Запустите чат на ПК или телефоне, либо введите адрес вручную. Проверьте, что сеть не гостевая и изоляция клиентов отключена.":error);return;}String[] labels=new String[results.size()];for(int i=0;i<labels.length;i++)labels[i]=results.get(i).toString();new AlertDialog.Builder(this).setTitle("Главное устройство").setItems(labels,(dialog,index)->{Discovery.Found f=results.get(index);serverInput.setText(f.address+":"+f.port);connect();}).setNegativeButton("Отмена",null).show();});});}
  private void startHosting(){

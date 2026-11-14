@@ -1,8 +1,8 @@
-# Рядом 0.1.2
+# Рядом 0.2.0
 
 Личный мини-чат для Windows и Android. Обменивайтесь текстом, фото, видео и файлами между своими устройствами в одной домашней сети — без интернета и аккаунтов.
 
-**[Скачать для Windows](https://github.com/parxomenkoevgenii/ryadom/releases/download/v0.1.2/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/parxomenkoevgenii/ryadom/releases/download/v0.1.2/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/parxomenkoevgenii/ryadom/releases/tag/v0.1.2)**
+**[Скачать для Windows](https://github.com/parxomenkoevgenii/ryadom/releases/download/v0.2.0/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/parxomenkoevgenii/ryadom/releases/download/v0.2.0/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/parxomenkoevgenii/ryadom/releases/tag/v0.2.0)**
 
 ## Возможности
 
@@ -12,6 +12,7 @@
 - **Подключение по коду** — поиск устройств в сети или ввод адреса вручную.
 - **Работа с Happ** — прямое соединение через домашнюю сеть; при блокировке со стороны VPN понадобится исключение для Рядом.
 - **Брандмауэр** — приложение проверяет входящие подключения и подсказывает, что разрешить, если их блокирует брандмауэр Windows или сторонний (ESET, Kaspersky).
+- **Защищённый канал** — соединение между приложениями шифруется TLS; отпечаток главного закрепляется при первом подключении. Браузерный доступ с других устройств в 0.2.0 отключён.
 
 ## Быстрый запуск
 
@@ -38,6 +39,6 @@
 | [LICENSE](LICENSE) | Лицензия MIT. |
 | [keys/](keys/) | Публичный сертификат и ключ для проверки подписи релизов. |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Лицензии сторонних компонентов. |
-| [CHANGELOG.md](CHANGELOG.md) | Что входит в выпуск 0.1.2. |
+| [CHANGELOG.md](CHANGELOG.md) | Что входит в выпуск 0.2.0. |
 
 Используйте доверенную домашнюю сеть: передача идёт без TLS и сквозного шифрования. Серверы проверены автоматическими тестами; APK на физическом телефоне пока не проверен. Проверяйте хэши и подписи релизов по инструкции [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md). [Подробнее об ограничениях и проверках](docs/GUIDE.md).

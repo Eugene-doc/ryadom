@@ -28,11 +28,12 @@ final class DirectProxy implements AutoCloseable {
     if(k.equals("cookie")){String sid="";for(String piece:v.split(";"))if(piece.trim().startsWith(cookie+"="))sid="ryadom_sid="+piece.trim().substring(cookie.length()+1);v=sid;}
     head.append(k).append(": ").append(v).append("\r\n");
    }
-   head.append("\r\n");out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));MiniHttp.copy(r.in,out,r.length);out.flush();
+   head.append("\r\n");out.write(head.toString().getBytes(StandardCharsets.ISO_8859_1));r.transfer(out);out.flush();
    InputStream in=new BufferedInputStream(upstream.getInputStream(),65536);String status=MiniHttp.line(in,8192);StringBuilder response=new StringBuilder(status+"\r\n");int total=0;
    while(true){String line=MiniHttp.line(in,8192);if(line.isEmpty())break;total+=line.length();if(total>32768)throw new IOException("Headers too large");if(line.toLowerCase(Locale.ROOT).startsWith("set-cookie: ryadom_sid="))line="Set-Cookie: "+cookie+"="+line.substring("set-cookie: ryadom_sid=".length());response.append(line).append("\r\n");}
    response.append("\r\n");r.out.write(response.toString().getBytes(StandardCharsets.ISO_8859_1));r.out.flush();r.sent=true;MiniHttp.copy(in,r.out,-1);
-  }catch(IOException e){if(r.sent)throw e;throw new MiniHttp.Failure(503,"Нет прямой связи с главным устройством. Проверьте Wi-Fi, изоляцию роутера и исключение «Рядом» в Happ.");}
+  }catch(TlsPin.PinMismatch e){if(r.sent)throw e;throw new MiniHttp.Failure(503,e.getMessage());}
+  catch(IOException e){if(r.sent)throw e;throw new MiniHttp.Failure(503,"Нет прямой связи с главным устройством. Проверьте Wi-Fi, изоляцию роутера и исключение «Рядом» в Happ.");}
  }
  public void close(){http.close();}
 }

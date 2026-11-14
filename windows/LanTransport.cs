@@ -5,7 +5,10 @@ using System.Linq;
 using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -49,19 +52,75 @@ namespace Ryadom {
   }
  }
  internal sealed class TcpBridge : IDisposable {
+  private static readonly SslProtocols Tls12=(SslProtocols)3072;
+  private const int MaxConnections=256,MaxPerIp=16,IdleTimeoutMs=120000;
   private readonly TcpListener listener;
   private readonly Func<TcpClient,TcpClient> connect;
   private readonly Func<TcpClient,byte[]> preface;
   private readonly Action<TcpClient> configure;
+  private readonly X509Certificate2 serverCertificate;
+  private readonly bool serverTls,clientTls;
+  private readonly string clientSni,pinKey;
+  private readonly string pinFile;
+  private readonly Action<string> tlsError;
   private readonly HashSet<TcpClient> sockets=new HashSet<TcpClient>();
+  private readonly Dictionary<string,int> byIp=new Dictionary<string,int>();
   private volatile bool disposed;
   public int Port {get{return ((IPEndPoint)listener.LocalEndpoint).Port;}}
-  public TcpBridge(string address,int port,Func<TcpClient,TcpClient> factory,Func<TcpClient,byte[]> header,Action<TcpClient> config,Action<Socket> listenerConfig=null) {
-   connect=factory;preface=header;configure=config;listener=new TcpListener(IPAddress.Parse(address),port);listener.Server.ExclusiveAddressUse=true;if(listenerConfig!=null)listenerConfig(listener.Server);listener.Start(64);Task.Run((Func<Task>)Accept);
+  public TcpBridge(string address,int port,Func<TcpClient,TcpClient> factory,Func<TcpClient,byte[]> header,Action<TcpClient> config,Action<Socket> listenerConfig=null,bool useServerTls=false,X509Certificate2 certificate=null,bool useClientTls=false,string sni=null,string pin=null,Action<string> tlsErrorHandler=null,string pinStore=null) {
+   connect=factory;preface=header;configure=config;serverCertificate=certificate;serverTls=useServerTls;clientTls=useClientTls;clientSni=sni;pinKey=pin;tlsError=tlsErrorHandler;pinFile=pinStore??TlsIdentity.PinFile;
+   listener=new TcpListener(IPAddress.Parse(address),port);listener.Server.ExclusiveAddressUse=true;if(listenerConfig!=null)listenerConfig(listener.Server);listener.Start(64);Task.Run((Func<Task>)Accept);
   }
-  private async Task Accept(){while(!disposed){TcpClient incoming;try{incoming=await listener.AcceptTcpClientAsync();}catch{return;}lock(sockets){if(sockets.Count>=128){incoming.Close();continue;}sockets.Add(incoming);}Task.Run(()=>Relay(incoming));}}
-  private async Task Relay(TcpClient incoming){TcpClient remote=null;try{configure(incoming);incoming.NoDelay=true;remote=connect(incoming);lock(sockets)sockets.Add(remote);byte[] prefix=preface(incoming);if(prefix.Length>0)await remote.GetStream().WriteAsync(prefix,0,prefix.Length);Task a=incoming.GetStream().CopyToAsync(remote.GetStream()),b=remote.GetStream().CopyToAsync(incoming.GetStream());await Task.WhenAny(a,b);}catch{}finally{incoming.Close();if(remote!=null)remote.Close();lock(sockets){sockets.Remove(incoming);if(remote!=null)sockets.Remove(remote);}}}
-  public void Dispose(){disposed=true;listener.Stop();lock(sockets){foreach(var s in sockets)s.Close();sockets.Clear();}}
+  private async Task Accept(){
+   while(!disposed){
+    TcpClient incoming;try{incoming=await listener.AcceptTcpClientAsync();}catch{return;}
+    string ip;try{ip=((IPEndPoint)incoming.Client.RemoteEndPoint).Address.ToString();}catch{incoming.Close();continue;}
+    lock(sockets){
+     int count;byIp.TryGetValue(ip,out count);int n=count;
+     if(sockets.Count>=MaxConnections||n>=MaxPerIp){incoming.Close();continue;}
+     byIp[ip]=n+1;sockets.Add(incoming);
+    }
+    Task.Run(()=>Relay(incoming,ip));
+   }
+  }
+  private void Release(TcpClient incoming,string ip){lock(sockets){sockets.Remove(incoming);int n;if(byIp.TryGetValue(ip,out n)){if(n<=1)byIp.Remove(ip);else byIp[ip]=n-1;}}}
+  private async Task Relay(TcpClient incoming,string ip) {
+   TcpClient remote=null;Stream incomingStream=null,remoteStream=null;Timer idle=null;int lastActivity=Environment.TickCount;
+   try {
+    configure(incoming);incoming.NoDelay=true;
+    incomingStream=incoming.GetStream();
+    if(serverTls){var ssl=new SslStream(incomingStream,false);ssl.AuthenticateAsServer(serverCertificate,false,Tls12,false);incomingStream=ssl;}
+    remote=connect(incoming);lock(sockets)sockets.Add(remote);
+    remoteStream=remote.GetStream();
+    if(clientTls){
+     string failure=null;
+     var ssl=new SslStream(remoteStream,false,(sender,certificate,chain,errors)=>{
+      if(certificate==null)return false;
+      var cert2=new X509Certificate2(certificate);
+      bool ok=TlsIdentity.Validate(pinKey??"host",cert2,pinFile,out failure);
+      return ok;
+     });
+     try{ssl.AuthenticateAsClient(clientSni??"ryadom.local",null,Tls12,false);}catch(AuthenticationException){if(tlsError!=null)tlsError(failure??"Не удалось установить защищённое соединение с главным устройством.");throw;}
+     remoteStream=ssl;
+    }
+    byte[] prefix=preface(incoming);if(prefix.Length>0)await remoteStream.WriteAsync(prefix,0,prefix.Length);
+    idle=new Timer(_=>{if(Environment.TickCount-lastActivity>IdleTimeoutMs){try{incoming.Close();}catch{}try{remote.Close();}catch{}}},null,30000,30000);
+    Task a=Pump(incomingStream,remoteStream,()=>lastActivity=Environment.TickCount);
+    Task b=Pump(remoteStream,incomingStream,()=>lastActivity=Environment.TickCount);
+    await Task.WhenAny(a,b);
+   }catch(AuthenticationException){}catch(IOException){}catch(ObjectDisposedException){}finally{
+    if(idle!=null)idle.Dispose();
+    try{if(incomingStream!=null)incomingStream.Dispose();}catch{}
+    try{if(remoteStream!=null)remoteStream.Dispose();}catch{}
+    incoming.Close();if(remote!=null)remote.Close();Release(incoming,ip);
+    lock(sockets){if(remote!=null)sockets.Remove(remote);}
+   }
+  }
+  private static async Task Pump(Stream from,Stream to,Action touch) {
+   var buffer=new byte[32768];
+   while(true){int read=await from.ReadAsync(buffer,0,buffer.Length);if(read<=0)break;await to.WriteAsync(buffer,0,read);touch();}
+  }
+  public void Dispose(){disposed=true;listener.Stop();lock(sockets){foreach(var s in sockets)s.Close();sockets.Clear();byIp.Clear();}}
  }
  internal sealed class FoundChat {
   public string Name,Address;public int Port;

@@ -18,7 +18,9 @@ $Sources=@(Get-ChildItem "$ProjectRoot\android\tests" -Recurse -Filter '*.java' 
 if($LASTEXITCODE -ne 0){throw 'Test compilation failed'}
 & "$JdkPath\bin\java.exe" -cp $Classpath local.ryadom.chat.AddressTest
 if($LASTEXITCODE -ne 0){throw 'Address validation tests failed'}
+& "$JdkPath\bin\java.exe" -cp $Classpath local.ryadom.chat.TlsTest
+if($LASTEXITCODE -ne 0){throw 'Android TLS identity and pinning tests failed'}
 $env:RYADOM_TEST_JAVA="$JdkPath\bin\java.exe"
 $env:RYADOM_TEST_CLASSPATH=$Classpath
-try { & node --test "$ProjectRoot\tests\server.test.cjs" "$ProjectRoot\tests\proxy.test.cjs"; if($LASTEXITCODE -ne 0){throw 'Android host / direct proxy integration tests failed'} }
+try { & node --test "$ProjectRoot\tests\server.test.cjs" "$ProjectRoot\tests\security.test.cjs" "$ProjectRoot\tests\proxy.test.cjs"; if($LASTEXITCODE -ne 0){throw 'Android host / direct proxy integration tests failed'} }
 finally { Remove-Item Env:\RYADOM_TEST_JAVA,Env:\RYADOM_TEST_CLASSPATH }

@@ -9,6 +9,7 @@ const { Transform } = require('node:stream');
 const { DatabaseSync } = require('node:sqlite');
 const sea = require('node:sea');
 const VERSION = '0.2.0';
+const PROTOCOL = 2;
 const MAX_FILE = 512 * 1024 * 1024;
 const PORT = Number(process.env.RYADOM_PORT || 4280);
 const DATA = process.env.RYADOM_DATA || path.join(process.env.LOCALAPPDATA || os.homedir(), 'Ryadom');
@@ -181,7 +182,7 @@ const server = http.createServer(async (req, res) => {
   if (route.startsWith('/api/local/')) {
    if (req.socket.ryadomPeer || address(req.socket.remoteAddress) !== '127.0.0.1') throw error(403, 'Только на этом устройстве');
    if (!native(req)) throw error(403, 'Нужен native-ключ');
-   if (route === '/api/local/status' && req.method === 'GET') return send(res, 200, { app: 'ryadom', version: VERSION, role: 'host' });
+   if (route === '/api/local/status' && req.method === 'GET') return send(res, 200, { app: 'ryadom', version: VERSION, role: 'host', protocol: PROTOCOL });
    if (route === '/api/local/host-token' && req.method === 'POST') {
     const token = crypto.randomBytes(32).toString('hex');
     hostTokens.set(token, Date.now() + HOST_TOKEN_TTL);
@@ -199,7 +200,7 @@ const server = http.createServer(async (req, res) => {
    const name = route === '/' ? 'index.html' : route.slice(1);
    res.writeHead(200, { 'Content-Type': { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' }[name.split('.').pop()] }); return res.end(assets.get(name));
   }
-  if (route === '/api/health' && req.method === 'GET') return send(res, 200, { app: 'ryadom', version: VERSION, name: os.hostname(), tls: process.env.RYADOM_TLS === '1' ? '1' : '0', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined });
+  if (route === '/api/health' && req.method === 'GET') return send(res, 200, { app: 'ryadom', version: VERSION, protocol: PROTOCOL, name: os.hostname(), tls: process.env.RYADOM_TLS === '1' ? '1' : '0', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined });
   if (route === '/api/host-login' && req.method === 'POST') {
    if (!loopback(req)) throw error(403, 'Откройте чат на главном устройстве');
    const body = await json(req);

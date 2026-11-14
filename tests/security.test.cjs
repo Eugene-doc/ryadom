@@ -24,8 +24,9 @@ const env={...process.env,
 };
 
 async function start(){
- const args=[path.resolve(__dirname,'../server.cjs')];
- proc=spawn(process.execPath,args,{env,stdio:['ignore','pipe','pipe']});
+ const command=process.env.RYADOM_TEST_JAVA||process.env.RYADOM_TEST_EXE||process.execPath;
+ const args=process.env.RYADOM_TEST_JAVA?['-cp',process.env.RYADOM_TEST_CLASSPATH,'local.ryadom.chat.ServerHarness',path.resolve(__dirname,'../public')]:process.env.RYADOM_TEST_EXE?[]:[path.resolve(__dirname,'../server.cjs')];
+ proc=spawn(command,args,{env,stdio:['ignore','pipe','pipe']});
  proc.stdout.on('data',x=>logs+=x);proc.stderr.on('data',x=>logs+=x);
  for(let i=0;i<120;i++){try{if((await fetch(`${base}/api/health`)).ok)return;}catch{}await new Promise(r=>setTimeout(r,60));}
  throw new Error(logs);
