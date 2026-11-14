@@ -49,12 +49,14 @@ test('Changing the main device is local and does not stop the remote chat',async
   assert.equal((await fetch(base+'/api/local/status')).status,403);
   assert.equal((await api(base,'/api/local/status','GET',undefined,'',{'X-Ryadom-Native':nativeKey})).body.role,'host');
   assert.equal((await api(clientBase,'/api/local/status')).body.role,'client');
-  for(const [url,signal,native] of [[base,hostSignal,{'X-Ryadom-Native':nativeKey}],[clientBase,clientSignal,{}]]){
+  for(const [url,signal,native] of [[base,hostSignal,{'X-Ryadom-Native':nativeKey}]]){
    assert.equal((await fetch(url+'/api/local/choose-role',{method:'POST'})).status,403);
    assert.equal((await api(url,'/api/local/choose-role','POST',{},'',{Origin:'http://evil.example',...native})).r.status,403);
    assert(!fs.existsSync(signal));
    assert.equal((await api(url,'/api/local/choose-role','POST',{},'',native)).r.status,200);assert.equal(fs.readFileSync(signal,'utf8'),'choose');
   }
+  assert.equal((await api(clientBase,'/api/local/choose-role','POST',{},'',{'X-Ryadom-Native':nativeKey})).r.status,403,'client role changes are native-only');
+  assert(!fs.existsSync(clientSignal));
   await stop(client);client=null;assert.equal((await api(base,'/api/health')).r.status,200);assert(fs.existsSync(path.join(data,'chat.sqlite')));
  }finally{await stop(client);await stop(host);fs.rmSync(data,{recursive:true,force:true});}
 });

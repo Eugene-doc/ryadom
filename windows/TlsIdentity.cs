@@ -49,31 +49,46 @@ namespace Ryadom {
    }
   }
   // TOFU: the first seen fingerprint is pinned; a changed certificate is rejected with a clear message.
+  private static readonly object PinLock=new object();
   public static bool Validate(string pinKey,X509Certificate2 certificate,string pinFile,out string error) {
    error="";
    string fingerprint=Fingerprint(certificate);
-   string existing=ReadPin(pinKey,pinFile);
-   if(string.IsNullOrEmpty(existing)){WritePin(pinKey,fingerprint,pinFile);return true;}
-   if(string.Equals(existing,fingerprint,StringComparison.OrdinalIgnoreCase))return true;
-   error="Сертификат главного устройства изменился. Если главное устройство переустанавливали, удалите файл "+pinFile+" и подключитесь заново.";
-   return false;
+   lock(PinLock) {
+    string existing;
+    if(!TryReadPin(pinKey,pinFile,out existing,out error))return false;
+    if(string.IsNullOrEmpty(existing)) {
+     if(!TryWritePin(pinKey,fingerprint,pinFile,out error))return false;
+     return true;
+    }
+    if(string.Equals(existing,fingerprint,StringComparison.OrdinalIgnoreCase))return true;
+    error="Сертификат главного устройства изменился. Если главное устройство переустанавливали, удалите файл "+pinFile+" и подключитесь заново.";
+    return false;
+   }
   }
-  private static string ReadPin(string key,string file) {
+  private static bool TryReadPin(string key,string file,out string pin,out string error) {
+   pin=null;error="";
    try {
-    if(!File.Exists(file))return null;
+    if(!File.Exists(file))return true;
     string encoded=Convert.ToBase64String(Encoding.UTF8.GetBytes(key));
-    foreach(string line in File.ReadAllLines(file)){string[] parts=line.Split('\t');if(parts.Length==2&&parts[0]==encoded)return parts[1];}
-   }catch{}
-   return null;
+    foreach(string line in File.ReadAllLines(file)){string[] parts=line.Split('\t');if(parts.Length==2&&parts[0]==encoded){pin=parts[1];return true;}}
+    return true;
+   }catch(Exception e){error="Не удалось прочитать хранилище сертификатов "+file+": "+e.Message;return false;}
   }
-  private static void WritePin(string key,string fingerprint,string file) {
+  private static bool TryWritePin(string key,string fingerprint,string file,out string error) {
+   error="";
    try {
     string encoded=Convert.ToBase64String(Encoding.UTF8.GetBytes(key));
     var lines=File.Exists(file)?File.ReadAllLines(file).Where(x=>{string[] p=x.Split('\t');return p.Length!=2||p[0]!=encoded;}).ToList():new List<string>();
     lines.Add(encoded+"\t"+fingerprint);
-    Directory.CreateDirectory(Path.GetDirectoryName(file));
-    File.WriteAllLines(file,lines,new UTF8Encoding(false));
-   }catch{}
+    string dir=Path.GetDirectoryName(file);Directory.CreateDirectory(dir);
+    string tmp=file+".tmp-"+Guid.NewGuid().ToString("N");
+    File.WriteAllLines(tmp,lines,new UTF8Encoding(false));
+    try {
+     if(File.Exists(file))File.Replace(tmp,file,null);
+     else File.Move(tmp,file);
+    }catch{try{File.Delete(tmp);}catch{}throw;}
+    return true;
+   }catch(Exception e){error="Не удалось сохранить отпечаток в "+file+": "+e.Message;return false;}
   }
   // Probe used before joining: performs a TLS handshake and reads /api/health over TLS.
   public static string Probe(LanInterface nic,string host,int port) {

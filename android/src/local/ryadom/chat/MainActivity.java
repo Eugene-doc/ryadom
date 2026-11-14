@@ -103,7 +103,7 @@ public final class MainActivity extends Activity {
   card.addView(text("Адрес указан в разделе «Подключить устройство». ПК может быть подключён кабелем, телефон — по Wi-Fi. Нужна одна подсеть без изоляции клиентов.",11,MUTED));
   errorText=text(error,12,0xffa65042);space(card,12);card.addView(errorText);space(card,12);
   connectButton=new Button(this);connectButton.setText("Подключиться  →");connectButton.setTextSize(14);connectButton.setAllCaps(false);connectButton.setTextColor(Color.WHITE);connectButton.setBackground(box(GREEN,10));card.addView(connectButton,params(-1,dp(49)));connectButton.setOnClickListener(v->connect());
-  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.2.0  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
+  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.2.1  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
  }
  /** Reject DNS names, public addresses, credentials, paths and ambiguous IPv4 forms. */
  static String validateServer(String value) throws Exception {

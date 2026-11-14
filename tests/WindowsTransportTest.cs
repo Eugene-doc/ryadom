@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -31,6 +33,17 @@ class TransportTest {
    using(var client=new TcpBridge("127.0.0.1",0,c=>new TcpClient("127.0.0.1",server.Port),c=>new byte[0],c=>{},null,false,null,true,"ryadom.local","127.0.0.1:"+server.Port,null,pinFile)) {
     using(var outer=new TcpClient("127.0.0.1",client.Port)){outer.ReceiveTimeout=5000;byte[] sent=Encoding.UTF8.GetBytes("TLS bridge test");outer.GetStream().Write(sent,0,sent.Length);byte[] got=new byte[256];int n=outer.GetStream().Read(got,0,got.Length);if(n!=sent.Length||Encoding.UTF8.GetString(got,0,n)!=Encoding.UTF8.GetString(sent))throw new Exception("TLS bridge mismatch");}
     Console.WriteLine("TLS bridge with TOFU pinning: PASS");
+    using(var hanging=new TcpBridge("127.0.0.1",0,c=>new TcpClient("127.0.0.1",upstreamPort),c=>new byte[0],c=>{},null,true,certificate,false,null,null,null,null,500))
+    using(var raw=new TcpClient("127.0.0.1",hanging.Port)) {
+     raw.ReceiveTimeout=5000;var sw=Stopwatch.StartNew();bool closed=false;
+     try{int n=raw.GetStream().Read(new byte[1],0,1);closed=n<=0;}catch(IOException){closed=true;}catch(SocketException){closed=true;}
+     if(!closed||sw.ElapsedMilliseconds>3000)throw new Exception("TLS handshake deadline was not enforced");
+     Console.WriteLine("TLS handshake deadline: PASS");
+    }
+    string pinDirectory=Path.Combine(dir,"pins-as-directory");Directory.CreateDirectory(pinDirectory);
+    string pinStoreError;
+    if(TlsIdentity.Validate("host",certificate,pinDirectory,out pinStoreError)||string.IsNullOrEmpty(pinStoreError))throw new Exception("Unwritable pin store was accepted");
+    Console.WriteLine("TLS pin store failure is reported: PASS");
     string encoded=Convert.ToBase64String(Encoding.UTF8.GetBytes("127.0.0.1:"+server.Port));
     File.WriteAllText(pinFile,encoded+"\t"+"00"+"\n");
     bool rejected=false;
@@ -42,5 +55,12 @@ class TransportTest {
    upstream.Stop();echo.Wait();
   }
   try{Directory.Delete(dir,true);}catch{}
+  var rule=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase){{"enabled","True"},{"direction","Inbound"},{"action","Allow"},{"profile","Private, Domain"},{"program","C:\\app.exe"},{"protocol","TCP"},{"port","4280"},{"remote","LocalSubnet"}};
+  var rules=new Dictionary<string,Dictionary<string,string>>{{"Ryadom chat TCP 4280",rule}};
+  var ruleProblems=new List<string>();
+  if(!FirewallAdvisor.ValidateRule(rules,"Ryadom chat TCP 4280","TCP",4280,"C:\\app.exe",ruleProblems))throw new Exception("Valid firewall rule was rejected: "+string.Join("; ",ruleProblems));
+  rule["profile"]="Public";
+  if(FirewallAdvisor.ValidateRule(rules,"Ryadom chat TCP 4280","TCP",4280,"C:\\app.exe",ruleProblems))throw new Exception("Public firewall profile was accepted");
+  Console.WriteLine("Firewall rule parser: PASS");
  }
 }

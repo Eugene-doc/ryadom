@@ -8,7 +8,7 @@ const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const { DatabaseSync } = require('node:sqlite');
 const sea = require('node:sea');
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const PROTOCOL = 2;
 const MAX_FILE = 512 * 1024 * 1024;
 const PORT = Number(process.env.RYADOM_PORT || 4280);
@@ -24,6 +24,7 @@ const MIN_FREE_BYTES = Number(process.env.RYADOM_MIN_FREE_MB || 256) * 1024 * 10
 const MSG_PER_MIN = Number(process.env.RYADOM_MSG_PER_MIN || 120);
 const UPLOAD_PER_MIN = Number(process.env.RYADOM_UPLOAD_PER_MIN || 30);
 const MAX_PENDING = Number(process.env.RYADOM_MAX_PENDING || 5);
+const PAIR_ATTEMPTS_PER_MIN = Number(process.env.RYADOM_PAIR_ATTEMPTS_PER_MIN || 8);
 if (process.env.RYADOM_ROLE === 'client') { startClientProxy(); return; }
 const uploads = path.join(DATA, 'files');
 fs.mkdirSync(uploads, { recursive: true });
@@ -87,6 +88,8 @@ function device(req) {
  const d = db.prepare('SELECT * FROM devices WHERE id=?').get(s.deviceId);
  if (!d) { db.prepare('DELETE FROM sessions WHERE token=?').run(s.token); return null; }
  try { if (Date.now() - Date.parse(s.lastSeen) > 60000) db.prepare('UPDATE sessions SET lastSeen=? WHERE token=?').run(now(), s.token); } catch {}
+ Object.defineProperty(d, 'sessionToken', { value: s.token });
+ Object.defineProperty(d, 'sessionExpires', { value: Date.parse(s.expires) });
  return d;
 }
 function publicDevices() {
@@ -94,7 +97,19 @@ function publicDevices() {
 }
 function broadcast(type, value, hostOnly = false) {
  const data = `event: ${type}\ndata: ${JSON.stringify(value)}\n\n`;
- for (const [res, c] of clients) { if (hostOnly && !c.host) continue; if (!res.write(data) || res.writableLength > 1024 * 1024) res.destroy(); }
+ for (const [res, c] of clients) {
+  if (hostOnly && !c.host) continue;
+  if (c.sessionExpires && c.sessionExpires <= Date.now()) { try { res.end(); } catch {} clients.delete(res); continue; }
+  try { res.write(data); if (res.writableLength > 1024 * 1024) { res.destroy(); clients.delete(res); } } catch { clients.delete(res); }
+ }
+}
+function closeClients(match, type) {
+ for (const [res, c] of clients) {
+  if (match && !match(c)) continue;
+  try { res.write(`event: ${type || 'revoked'}\ndata: {}\n\n`); res.end(); } catch {}
+  clients.delete(res);
+ }
+ broadcast('devices', publicDevices());
 }
 function message(row) { return { ...row, file: row.file ? JSON.parse(row.file) : null }; }
 function addMessage(d, text, file, requestId, announce = true) {
@@ -155,6 +170,22 @@ function allowRate(deviceId, kind, limit) {
 }
 function totalBytes() { try { return db.prepare('SELECT COALESCE(SUM(size),0) AS n FROM files').get().n; } catch { return 0; } }
 function deviceBytes(deviceId) { try { return db.prepare('SELECT COALESCE(SUM(size),0) AS n FROM files WHERE deviceId=?').get(deviceId).n; } catch { return 0; } }
+// Quota reservations close the window between separate parallel uploads checking the same totals.
+let reservedTotal = 0;
+const reservedDevice = new Map();
+function reserveBytes(deviceId, size) {
+ const total = totalBytes(), own = deviceBytes(deviceId), reservedOwn = reservedDevice.get(deviceId) || 0;
+ if (total + reservedTotal + size > MAX_TOTAL_BYTES || own + reservedOwn + size > MAX_DEVICE_BYTES) throw error(507, 'Хранилище заполнено. Удалите старые файлы на главном устройстве');
+ if (freeDiskBytes() < size + MIN_FREE_BYTES + reservedTotal) throw error(507, 'На главном устройстве мало свободного места');
+ reservedTotal += size; reservedDevice.set(deviceId, reservedOwn + size);
+ let released = false;
+ return () => {
+  if (released) return; released = true;
+  reservedTotal = Math.max(0, reservedTotal - size);
+  const left = (reservedDevice.get(deviceId) || 0) - size;
+  if (left > 0) reservedDevice.set(deviceId, left); else reservedDevice.delete(deviceId);
+ };
+}
 function freeDiskBytes() { try { const s = fs.statfsSync(DATA); return Number(s.bavail) * Number(s.bsize); } catch { return Number.MAX_SAFE_INTEGER; } }
 function native(req) {
  if (!NATIVE_KEY) return false;
@@ -181,17 +212,17 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${host}`); const route = url.pathname;
   if (route.startsWith('/api/local/')) {
    if (req.socket.ryadomPeer || address(req.socket.remoteAddress) !== '127.0.0.1') throw error(403, 'Только на этом устройстве');
+   if (route === '/api/local/choose-role' && req.method === 'POST' && process.env.RYADOM_ROLE_SIGNAL) {
+    if (!native(req) && !hostSession(req)) throw error(403, 'Нужен native-ключ или сессия главного');
+    fs.writeFileSync(process.env.RYADOM_ROLE_SIGNAL, 'choose');
+    return send(res, 200, { ok: true });
+   }
    if (!native(req)) throw error(403, 'Нужен native-ключ');
    if (route === '/api/local/status' && req.method === 'GET') return send(res, 200, { app: 'ryadom', version: VERSION, role: 'host', protocol: PROTOCOL });
    if (route === '/api/local/host-token' && req.method === 'POST') {
     const token = crypto.randomBytes(32).toString('hex');
     hostTokens.set(token, Date.now() + HOST_TOKEN_TTL);
     return send(res, 200, { token, expires: HOST_TOKEN_TTL });
-   }
-   if (route === '/api/local/choose-role' && req.method === 'POST' && process.env.RYADOM_ROLE_SIGNAL) {
-    if (!native(req) && !hostSession(req)) throw error(403, 'Нужен native-ключ или сессия главного');
-    fs.writeFileSync(process.env.RYADOM_ROLE_SIGNAL, 'choose');
-    return send(res, 200, { ok: true });
    }
    if (route === '/api/local/quit' && req.method === 'POST') { send(res, 200, { ok: true }); setTimeout(shutdown, 200); return; }
    throw error(404, 'Не найдено');
@@ -215,7 +246,7 @@ const server = http.createServer(async (req, res) => {
   if (route === '/api/pair' && req.method === 'POST') {
    const ip = address(peer); const entry = attempts.get(ip) || { count: 0, until: Date.now() + 60000 };
    if (Date.now() > entry.until) { entry.count = 0; entry.until = Date.now() + 60000; }
-   attempts.set(ip, entry); if (++entry.count > 8) throw error(429, 'Слишком много попыток. Подождите минуту');
+   attempts.set(ip, entry); if (++entry.count > PAIR_ATTEMPTS_PER_MIN) throw error(429, 'Слишком много попыток. Подождите минуту');
    prunePairs();
    const body = await json(req);
    if (pairingDisabled()) throw error(403, 'Код истёк. Создайте новый код на главном устройстве');
@@ -268,13 +299,11 @@ const server = http.createServer(async (req, res) => {
    if (!allowRate(d.id, 'up', UPLOAD_PER_MIN)) throw error(429, 'Слишком много передач. Подождите минуту');
    const size = Number(req.headers['content-length']);
    if (!Number.isSafeInteger(size) || size < 1 || size > MAX_FILE) throw error(413, 'Файл должен быть от 1 байта до 512 МБ');
-   const used = totalBytes(), devUsed = deviceBytes(d.id);
-   if (used + size > MAX_TOTAL_BYTES || devUsed + size > MAX_DEVICE_BYTES) throw error(507, 'Хранилище заполнено. Удалите старые файлы на главном устройстве');
-   if (freeDiskBytes() < size + MIN_FREE_BYTES) throw error(507, 'На главном устройстве мало свободного места');
    const requestId = String(url.searchParams.get('requestId') || crypto.randomUUID()).slice(0, 80);
    const old = db.prepare('SELECT * FROM messages WHERE requestId=? AND deviceId=?').get(requestId, d.id);
    if (old) { req.resume(); return send(res, 200, message(old)); }
    if (uploadJobs.has(requestId) || (activeUploads.get(d.id) || 0) >= 2) throw error(429, 'Дождитесь завершения текущей передачи');
+   const release = reserveBytes(d.id, size);
    uploadJobs.add(requestId); activeUploads.set(d.id, (activeUploads.get(d.id) || 0) + 1);
    const id = crypto.randomUUID(); const tmp = path.join(uploads, `${id}.part`); const final = path.join(uploads, id); let committed = false;
    try {
@@ -291,7 +320,7 @@ const server = http.createServer(async (req, res) => {
     catch (e) { db.exec('ROLLBACK'); throw e; }
     broadcast('message', result);
     return send(res, 201, result);
-   } finally { uploadJobs.delete(requestId); activeUploads.set(d.id, Math.max(0, (activeUploads.get(d.id) || 1) - 1)); fs.rmSync(tmp, { force: true }); if (!committed) fs.rmSync(final, { force: true }); }
+   } finally { release(); uploadJobs.delete(requestId); activeUploads.set(d.id, Math.max(0, (activeUploads.get(d.id) || 1) - 1)); fs.rmSync(tmp, { force: true }); if (!committed) fs.rmSync(final, { force: true }); }
   }
   if (route.startsWith('/files/') && ['GET', 'HEAD'].includes(req.method)) {
    const f = db.prepare('SELECT * FROM files WHERE id=?').get(route.slice(7)); if (!f) throw error(404, 'Файл не найден');
@@ -312,7 +341,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (route === '/api/events' && req.method === 'GET') {
    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' }); res.write('retry: 1500\n\n');
-   clients.set(res, { deviceId: d.id, host: !!d.host }); broadcast('devices', publicDevices());
+   clients.set(res, { deviceId: d.id, host: !!d.host, sessionToken: d.sessionToken, sessionExpires: d.sessionExpires }); broadcast('devices', publicDevices());
    const keepalive = setInterval(() => res.write(': alive\n\n'), 20000);
    req.on('close', () => { clearInterval(keepalive); clients.delete(res); broadcast('devices', publicDevices()); }); return;
   }
@@ -322,7 +351,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (route === '/api/logout' && req.method === 'POST') {
    const raw = rawCookie(req);
-   if (raw) db.prepare('DELETE FROM sessions WHERE token=?').run(sha(raw));
+   if (raw) { const tokenHash = sha(raw); db.prepare('DELETE FROM sessions WHERE token=?').run(tokenHash); closeClients(c => c.sessionToken === tokenHash, 'logout'); }
    logEvent('logout', d.name, address(peer));
    return send(res, 200, { ok: true }, { 'Set-Cookie': clearCookie() });
   }
@@ -355,8 +384,8 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { ok: true });
    }
    if (route === '/api/host/logout-all' && req.method === 'POST') {
-    const current = sha(rawCookie(req));
     db.prepare('DELETE FROM sessions').run();
+    closeClients(() => true, 'logout_all');
     logEvent('logout_all', d.name, address(peer));
     return send(res, 200, { ok: true }, { 'Set-Cookie': sessionCookie(newSession(d.id)) });
    }
@@ -369,8 +398,7 @@ const server = http.createServer(async (req, res) => {
     db.prepare('DELETE FROM devices WHERE id=? AND host=0').run(id);
     db.prepare('DELETE FROM sessions WHERE deviceId=?').run(id);
     logEvent('device_revoked', id, address(peer));
-    for (const [r, c] of clients) if (c.deviceId === id) { r.write('event: revoked\ndata: {}\n\n'); r.end(); clients.delete(r); }
-    broadcast('devices', publicDevices()); return send(res, 200, { ok: true });
+    closeClients(c => c.deviceId === id, 'revoked'); return send(res, 200, { ok: true });
    }
    if (route === '/api/host/stop' && req.method === 'POST') { send(res, 200, { ok: true }); setTimeout(shutdown, 250); return; }
   }
@@ -379,7 +407,7 @@ const server = http.createServer(async (req, res) => {
 });
 server.requestTimeout = 30 * 60 * 1000;
 server.headersTimeout = 30000;
-const sessionCleanup = setInterval(() => { try { db.prepare('DELETE FROM sessions WHERE expires<?').run(now()); } catch {} }, 60 * 60 * 1000); sessionCleanup.unref();
+const sessionCleanup = setInterval(() => { try { db.prepare('DELETE FROM sessions WHERE expires<?').run(now()); closeClients(c => c.sessionExpires && c.sessionExpires <= Date.now(), 'expired'); } catch {} }, 60 * 1000); sessionCleanup.unref();
 function openWindow() {
  if (process.env.RYADOM_NO_OPEN === '1') return;
  const url = `http://127.0.0.1:${PORT}/`;
@@ -431,7 +459,6 @@ function startClientProxy(){
   if (req.socket.remoteAddress !== '127.0.0.1' || req.headers.host !== own || req.headers.origin && req.headers.origin !== `http://${own}`) return fail(403, 'Недопустимый источник');
   if (!['GET', 'HEAD'].includes(req.method) && req.headers['x-ryadom'] !== '1') return fail(403, 'Недопустимый запрос');
   if (req.url === '/api/local/status') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end(JSON.stringify({ app: 'ryadom', role: 'client', version: VERSION, target: target.origin })); }
-  if (req.url === '/api/local/choose-role' && req.method === 'POST' && process.env.RYADOM_ROLE_SIGNAL) { fs.writeFileSync(process.env.RYADOM_ROLE_SIGNAL, 'choose'); res.end('{"ok":true}'); return; }
   if (req.url === '/api/local/quit' && req.method === 'POST' && NATIVE_KEY && req.headers['x-ryadom-native'] === NATIVE_KEY) { res.end('{"ok":true}'); setTimeout(() => process.exit(0), 200); return; }
   if (req.url.startsWith('/api/local/') || req.url.startsWith('/api/host-login')) return fail(403, 'Недоступно при подключении к другому устройству');
   const headers = { ...req.headers, host: target.host }; delete headers['x-ryadom-native']; delete headers['proxy-authorization']; delete headers['proxy-connection']; delete headers.forwarded; delete headers['x-forwarded-for'];
@@ -439,7 +466,7 @@ function startClientProxy(){
   const sid = (headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith(cookieName + '=')); headers.cookie = sid ? 'ryadom_sid=' + sid.slice(cookieName.length + 1) : '';
   const upstream = http.request({ hostname: '127.0.0.1', port: tunnel, path: req.url, method: req.method, headers, agent: false }, reply => {
    const responseHeaders = { ...reply.headers, 'Cache-Control': 'no-store' }; if (responseHeaders['set-cookie']) responseHeaders['set-cookie'] = responseHeaders['set-cookie'].map(c => c.replace(/^ryadom_sid=/, cookieName + '='));
-   if (req.url === '/api/state' && reply.statusCode === 200) { const chunks = []; reply.on('data', b => chunks.push(b)); reply.on('end', () => { try { const data = JSON.parse(Buffer.concat(chunks)); data.server.localControls = true; data.server.direct = true; const body = JSON.stringify(data); delete responseHeaders['transfer-encoding']; responseHeaders['content-length'] = Buffer.byteLength(body); res.writeHead(200, responseHeaders); res.end(body); } catch { fail(502, 'Нет ответа от главного устройства'); } }); }
+   if (req.url === '/api/state' && reply.statusCode === 200) { const chunks = []; reply.on('data', b => chunks.push(b)); reply.on('end', () => { try { const data = JSON.parse(Buffer.concat(chunks)); data.server.localControls = false; data.server.direct = true; const body = JSON.stringify(data); delete responseHeaders['transfer-encoding']; responseHeaders['content-length'] = Buffer.byteLength(body); res.writeHead(200, responseHeaders); res.end(body); } catch { fail(502, 'Нет ответа от главного устройства'); } }); }
    else { res.writeHead(reply.statusCode, responseHeaders); reply.pipe(res); } res.on('close', () => reply.destroy());
   });
   upstream.on('error', () => { if (res.headersSent) { res.destroy(); return; } if (req.url === '/' && req.method === 'GET') { res.writeHead(503, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'" }); res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Рядом</title><body style="font:18px Segoe UI,sans-serif;padding:10%;background:#f5f6f3;color:#36533b"><h1>Главное устройство не отвечает</h1><p>Проверьте, запущен ли чат, адрес и домашнюю сеть.</p><p>Сменить главное устройство можно через значок Рядом рядом с часами.</p><a href="/">Повторить</a>'); } else fail(502, 'Главное устройство недоступно. Проверьте локальную сеть.'); });

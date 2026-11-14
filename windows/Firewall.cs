@@ -79,11 +79,11 @@ namespace Ryadom {
     "$names=@("+Quote(RuleTcp)+","+Quote(RuleUdp)+");"+
     "foreach($name in $names){"+
     "$r=Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue|Select-Object -First 1;"+
-    "if(-not $r){'MISSING`t'+$name;continue}"+
+    "if(-not $r){'MISSING'+[char]9+$name;continue}"+
     "$a=$r|Get-NetFirewallApplicationFilter -ErrorAction SilentlyContinue;"+
     "$p=$r|Get-NetFirewallPortFilter -ErrorAction SilentlyContinue;"+
     "$ad=$r|Get-NetFirewallAddressFilter -ErrorAction SilentlyContinue;"+
-    "'RULE`t'+$name+'`t'+$r.Enabled+'`t'+$r.Direction+'`t'+$r.Action+'`t'+$r.Profile+'`t'+$a.Program+'`t'+$p.Protocol+'`t'+$p.LocalPort+'`t'+$ad.RemoteAddress"+
+    "'RULE'+[char]9+$name+[char]9+$r.Enabled+[char]9+$r.Direction+[char]9+$r.Action+[char]9+$r.Profile+[char]9+$a.Program+[char]9+$p.Protocol+[char]9+$p.LocalPort+[char]9+$ad.RemoteAddress"+
     "};"));
    if(output==null) { report.Problems.Add("не удалось прочитать правила брандмауэра"); return; }
    var rules=new Dictionary<string,Dictionary<string,string>>();
@@ -101,7 +101,7 @@ namespace Ryadom {
    report.RulesOk=tcpOk&&udpOk;
    if(report.PublicNetwork&&report.RulesOk)report.Problems.Add("сеть общедоступная: правила для частных сетей сейчас не действуют");
   }
-  private static bool ValidateRule(Dictionary<string,Dictionary<string,string>> rules,string name,string protocol,int port,string exe,List<string> problems) {
+  internal static bool ValidateRule(Dictionary<string,Dictionary<string,string>> rules,string name,string protocol,int port,string exe,List<string> problems) {
    Dictionary<string,string> rule;if(!rules.TryGetValue(name,out rule)){if(!problems.Any(p=>p.Contains(name)))problems.Add("правило «"+name+"» не найдено");return false;}
    bool ok=true;
    if(!string.Equals(rule["enabled"],"True",StringComparison.OrdinalIgnoreCase)){problems.Add(name+": правило выключено");ok=false;}
@@ -110,8 +110,12 @@ namespace Ryadom {
    if(!string.Equals(rule["protocol"],protocol,StringComparison.OrdinalIgnoreCase)){problems.Add(name+": протокол не "+protocol);ok=false;}
    if(!string.Equals(rule["port"].Trim(),port.ToString(),StringComparison.OrdinalIgnoreCase)){problems.Add(name+": порт не "+port);ok=false;}
    if(!string.Equals(rule["program"].Trim(),exe,StringComparison.OrdinalIgnoreCase)){problems.Add(name+": разрешено другое приложение");ok=false;}
+   string profile=rule["profile"]??"";
+   var profiles=profile.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).ToList();
+   if(profiles.Count==0||profiles.Any(x=>!string.Equals(x,"Private",StringComparison.OrdinalIgnoreCase)&&!string.Equals(x,"Domain",StringComparison.OrdinalIgnoreCase))){problems.Add(name+": профиль не только частная сеть");ok=false;}
    string remote=rule["remote"]??"";
-   if(remote.IndexOf("LocalSubnet",StringComparison.OrdinalIgnoreCase)<0){problems.Add(name+": удалённые адреса не ограничены локальной сетью");ok=false;}
+   var remotes=remote.Split(',').Select(x=>x.Trim()).Where(x=>x.Length>0).ToList();
+   if(remotes.Count==0||remotes.Any(x=>!string.Equals(x,"LocalSubnet",StringComparison.OrdinalIgnoreCase))){problems.Add(name+": удалённые адреса не ограничены локальной сетью");ok=false;}
    return ok;
   }
   private static string Quote(string value){return "'"+value.Replace("'","''")+"'";}
@@ -216,13 +220,33 @@ namespace Ryadom {
     "}"+Environment.NewLine+
     "if(-not (Check $tmpTcp 'TCP' "+ChatPort+")){Remove-NetFirewallRule -DisplayName $tmpTcp,$tmpUdp -ErrorAction SilentlyContinue;throw 'Проверка TCP-правила не прошла'}"+Environment.NewLine+
     "if(-not (Check $tmpUdp 'UDP' "+DiscoveryPort+")){Remove-NetFirewallRule -DisplayName $tmpTcp,$tmpUdp -ErrorAction SilentlyContinue;throw 'Проверка UDP-правила не прошла'}"+Environment.NewLine+
-    "Remove-NetFirewallRule -DisplayName $tcp,$udp -ErrorAction SilentlyContinue"+Environment.NewLine+
-    "Set-NetFirewallRule -DisplayName $tmpTcp -NewDisplayName $tcp"+Environment.NewLine+
-    "Set-NetFirewallRule -DisplayName $tmpUdp -NewDisplayName $udp"+Environment.NewLine+
-    "Write-Output 'OK'";
+    "$backTcp=$tcp+' (backup)';$backUdp=$udp+' (backup)'"+Environment.NewLine+
+    "Remove-NetFirewallRule -DisplayName $backTcp,$backUdp -ErrorAction SilentlyContinue"+Environment.NewLine+
+    "if(Get-NetFirewallRule -DisplayName $tcp -ErrorAction SilentlyContinue){Set-NetFirewallRule -DisplayName $tcp -NewDisplayName $backTcp}"+Environment.NewLine+
+    "if(Get-NetFirewallRule -DisplayName $udp -ErrorAction SilentlyContinue){Set-NetFirewallRule -DisplayName $udp -NewDisplayName $backUdp}"+Environment.NewLine+
+    "try{"+Environment.NewLine+
+    " Set-NetFirewallRule -DisplayName $tmpTcp -NewDisplayName $tcp"+Environment.NewLine+
+    " Set-NetFirewallRule -DisplayName $tmpUdp -NewDisplayName $udp"+Environment.NewLine+
+    " if(-not (Check $tcp 'TCP' "+ChatPort+")){throw 'Проверка TCP после установки не прошла'}"+Environment.NewLine+
+    " if(-not (Check $udp 'UDP' "+DiscoveryPort+")){throw 'Проверка UDP после установки не прошла'}"+Environment.NewLine+
+    " Remove-NetFirewallRule -DisplayName $backTcp,$backUdp -ErrorAction SilentlyContinue"+Environment.NewLine+
+    " Write-Output 'OK'"+Environment.NewLine+
+    "}catch{"+Environment.NewLine+
+    " Remove-NetFirewallRule -DisplayName $tmpTcp,$tmpUdp -ErrorAction SilentlyContinue"+Environment.NewLine+
+    " Remove-NetFirewallRule -DisplayName $tcp,$udp -ErrorAction SilentlyContinue"+Environment.NewLine+
+    " if(Get-NetFirewallRule -DisplayName $backTcp -ErrorAction SilentlyContinue){Set-NetFirewallRule -DisplayName $backTcp -NewDisplayName $tcp}"+Environment.NewLine+
+    " if(Get-NetFirewallRule -DisplayName $backUdp -ErrorAction SilentlyContinue){Set-NetFirewallRule -DisplayName $backUdp -NewDisplayName $udp}"+Environment.NewLine+
+    " throw"+Environment.NewLine+
+    "}";
    try {
     var start=new ProcessStartInfo("powershell.exe","-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand "+Convert.ToBase64String(Encoding.Unicode.GetBytes(script))){UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden};
-    using(var process=Process.Start(start)){if(process==null){error="не удалось запустить настройку";return false;}process.WaitForExit(120000);}
+    int exitCode;
+    using(var process=Process.Start(start)){
+     if(process==null){error="не удалось запустить настройку";return false;}
+     if(!process.WaitForExit(120000)){try{process.Kill();}catch{}error="настройка не завершилась за 2 минуты";return false;}
+     exitCode=process.ExitCode;
+    }
+    if(exitCode!=0){error="настройка отменена или завершилась с кодом "+exitCode;return false;}
    } catch(Exception e){error=e.Message;return false;}
    var report=Inspect();
    if(report.RulesOk)return true;

@@ -16,10 +16,17 @@ $Classpath="$TestClasses;$BuildRoot\classes;$ProjectRoot\.tools\java\json.jar;$A
 $Sources=@(Get-ChildItem "$ProjectRoot\android\tests" -Recurse -Filter '*.java' | ForEach-Object { $_.FullName })
 & "$JdkPath\bin\javac.exe" -encoding UTF-8 -cp $Classpath -d $TestClasses @Sources
 if($LASTEXITCODE -ne 0){throw 'Test compilation failed'}
-& "$JdkPath\bin\java.exe" -cp $Classpath local.ryadom.chat.AddressTest
-if($LASTEXITCODE -ne 0){throw 'Address validation tests failed'}
-& "$JdkPath\bin\java.exe" -cp $Classpath local.ryadom.chat.TlsTest
-if($LASTEXITCODE -ne 0){throw 'Android TLS identity and pinning tests failed'}
+function Invoke-JvmTest([string]$Main,[hashtable]$Variables=@{}){
+ $Saved=@{}
+ foreach($Key in $Variables.Keys){$Saved[$Key]=[Environment]::GetEnvironmentVariable($Key,'Process');[Environment]::SetEnvironmentVariable($Key,[string]$Variables[$Key],'Process')}
+ try { & "$JdkPath\bin\java.exe" -cp $Classpath $Main; if($LASTEXITCODE -ne 0){throw "JVM test failed: $Main"} }
+ finally { foreach($Key in $Variables.Keys){[Environment]::SetEnvironmentVariable($Key,$Saved[$Key],'Process')} }
+}
+Invoke-JvmTest 'local.ryadom.chat.AddressTest'
+Invoke-JvmTest 'local.ryadom.chat.TlsTest'
+Invoke-JvmTest 'local.ryadom.chat.SessionSecurityTest'
+Invoke-JvmTest 'local.ryadom.chat.TimeoutTest' @{RYADOM_HTTP_HEADER_TIMEOUT_MS='800';RYADOM_HTTP_BODY_TIMEOUT_MS='600';RYADOM_HTTP_BODY_TOTAL_TIMEOUT_MS='1200'}
+Invoke-JvmTest 'local.ryadom.chat.QuotaTest' @{RYADOM_MAX_TOTAL_MB='1';RYADOM_MAX_DEVICE_MB='1';RYADOM_MIN_FREE_MB='0'}
 $env:RYADOM_TEST_JAVA="$JdkPath\bin\java.exe"
 $env:RYADOM_TEST_CLASSPATH=$Classpath
 try { & node --test "$ProjectRoot\tests\server.test.cjs" "$ProjectRoot\tests\security.test.cjs" "$ProjectRoot\tests\proxy.test.cjs"; if($LASTEXITCODE -ne 0){throw 'Android host / direct proxy integration tests failed'} }

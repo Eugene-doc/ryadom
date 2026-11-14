@@ -96,11 +96,11 @@ public final class TlsTest {
     if(!state.contains("\"tls\":true"))throw new AssertionError("state must advertise TLS: "+state);
     if(!state.contains(host.tls.fingerprint))throw new AssertionError("state fingerprint: "+state);
     String health=request("127.0.0.1",port,"GET","/api/health",null,null);
-    if(!health.contains("\"version\":\"0.2.0\""))throw new AssertionError("health version: "+health);
+    if(!health.contains("\"version\":\""+ChatHost.VERSION+"\""))throw new AssertionError("health version: "+health);
     String replayed=request("127.0.0.1",port,"POST","/api/host-login","{\"token\":\""+token+"\"}",null);
     if(!replayed.startsWith("HTTP/1.1 403"))throw new AssertionError("one-time token: "+replayed);
    }finally{host.close();}
-   System.out.println("TLS identity, TOFU pinning and 0.2.0 host login checks passed");
+   System.out.println("TLS identity, TOFU pinning and host login checks passed");
   }finally{delete(root);}
  }
  private static Socket connect(int port,String host,String key,TlsPin.Store store) throws IOException {

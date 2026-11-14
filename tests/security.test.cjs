@@ -20,7 +20,9 @@ const env={...process.env,
  RYADOM_UPLOAD_PER_MIN:'30',
  RYADOM_MAX_TOTAL_MB:'1',
  RYADOM_MAX_DEVICE_MB:'1',
- RYADOM_PAIR_TTL_MS:'60000'
+ RYADOM_PAIR_TTL_MS:'60000',
+ RYADOM_PAIR_ATTEMPTS_PER_MIN:'100',
+ RYADOM_ROLE_SIGNAL:path.join(dir,'role-signal')
 };
 
 async function start(){
@@ -157,4 +159,41 @@ test('Квота хранилища не позволяет заполнить �
  assert.equal(first.status,201);
  const second=await fetch(`${base}/api/files?name=b.bin&requestId=quota-2`,{method:'POST',headers:{Cookie:d.cookie,'X-Ryadom':'1','Content-Type':'application/octet-stream'},body:big});
  assert.equal(second.status,507);
+});
+
+test('Параллельные загрузки не обходят квоту',async()=>{
+ const host=await login();
+ const d=await newDevice(host,'Параллель');
+ const body=Buffer.alloc(200*1024,3);
+ const upload=n=>fetch(`${base}/api/files?name=p${n}.bin&requestId=par-${n}`,{method:'POST',headers:{Cookie:d.cookie,'X-Ryadom':'1','Content-Type':'application/octet-stream'},body});
+ const results=await Promise.all([upload(1),upload(2)]);
+ const statuses=results.map(r=>r.status).sort();
+ assert.deepEqual(statuses,[201,507],'exactly one parallel upload must fit the remaining quota: '+statuses.join(','));
+ const state=await req('/api/state',{cookie:host});
+ assert.ok(state.data.storage.usedBytes<=1024*1024,'stored bytes must stay within the 1 MiB quota');
+});
+
+test('SSE закрывается при выходе устройства',async()=>{
+ const host=await login();
+ const d=await newDevice(host,'Поток');
+ const controller=new AbortController();
+ const stream=await fetch(`${base}/api/events`,{headers:{Cookie:d.cookie},signal:controller.signal});
+ assert.equal(stream.status,200);
+ const reader=stream.body.getReader();
+ await reader.read();
+ assert.equal((await req('/api/logout',{method:'POST',body:{},cookie:d.cookie})).r.status,200);
+ const next=await Promise.race([reader.read(),new Promise(r=>setTimeout(()=>r({timeout:true}),2000))]);
+ assert.ok(next.timeout!==true,'SSE must be closed after logout');
+ const text=next.value?Buffer.from(next.value).toString('utf8'):'';
+ assert.ok(next.done||text.includes('event: logout'),'closing event must be logout, got: '+text);
+ controller.abort();
+});
+
+test('Выбор роли доступен сессии главного, но не без аутентификации',async()=>{
+ const host=await login();
+ const denied=await req('/api/local/choose-role',{method:'POST',body:{}});
+ assert.equal(denied.r.status,403);
+ const allowed=await req('/api/local/choose-role',{method:'POST',body:{},cookie:host});
+ assert.equal(allowed.r.status,200);
+ assert.equal(fs.readFileSync(env.RYADOM_ROLE_SIGNAL,'utf8'),'choose');
 });

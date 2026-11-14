@@ -18,7 +18,7 @@ import java.util.concurrent.*;
 final class ChatHost implements AutoCloseable {
  interface Assets {byte[] read(String name) throws IOException;}
  interface Mutation {void apply(JSONObject next) throws Exception;}
- static final String VERSION="0.2.0";static final int PROTOCOL=2;
+ static final String VERSION="0.2.1";static final int PROTOCOL=2;
  static final long MAX_FILE=512L*1024*1024;
  static final int MAX_STREAMS=8,MAX_EVENT_LOG=500,MAX_PENDING_DEFAULT=5;
  final File directory,files,stateFile;final Assets assets;final List<String> addresses;final int port;
@@ -30,11 +30,12 @@ final class ChatHost implements AutoCloseable {
  private final Map<String,long[]> attempts=new HashMap<>();
  private final Set<String> uploadIds=new HashSet<>();
  private final Map<String,Integer> uploads=new HashMap<>();
+ private final Map<String,Long> reserved=new HashMap<>();private long reservedTotal;
  private final Map<String,List<Long>> rate=new HashMap<>();
  private final Map<String,Long> hostTokens=new HashMap<>();
  private final Map<String,JSONObject> pending=new LinkedHashMap<>();
  private final long sessionTtl,hostTokenTtl,pairTtl,maxTotal,maxDevice,minFree;
- private final int msgPerMin,uploadPerMin,maxPending;
+ private final int msgPerMin,uploadPerMin,maxPending,pairAttempts;
  private final String nativeKey;
  private final Runnable stop;private final MiniHttp http;
  private final ExecutorService sse=Executors.newCachedThreadPool(new ThreadFactory(){public Thread newThread(Runnable run){Thread thread=new Thread(run,"Ryadom SSE");thread.setDaemon(true);return thread;}});
@@ -50,13 +51,16 @@ final class ChatHost implements AutoCloseable {
   msgPerMin=(int)number("RYADOM_MSG_PER_MIN",120);
   uploadPerMin=(int)number("RYADOM_UPLOAD_PER_MIN",30);
   maxPending=(int)number("RYADOM_MAX_PENDING",MAX_PENDING_DEFAULT);
-  state=stateFile.exists()?new JSONObject(new String(Files.readAllBytes(stateFile.toPath()),StandardCharsets.UTF_8)):new JSONObject();
+  pairAttempts=(int)number("RYADOM_PAIR_ATTEMPTS_PER_MIN",8);
+  boolean fresh=!stateFile.exists();
+  state=fresh?new JSONObject():new JSONObject(new String(Files.readAllBytes(stateFile.toPath()),StandardCharsets.UTF_8));
   if(!state.has("devices"))state.put("devices",new JSONArray());
   if(!state.has("messages"))state.put("messages",new JSONArray());
   if(!state.has("files"))state.put("files",new JSONArray());
   if(!state.has("sessions"))state.put("sessions",new JSONArray());
   if(!state.has("events"))state.put("events",new JSONArray());
   if(!state.has("seq"))state.put("seq",0);
+  if(fresh)state.put("schema",2);
   tls=TlsIdentity.ensure(new File(dir,"tls"));
   for(File file:Objects.requireNonNull(files.listFiles()))if(file.getName().endsWith(".part"))file.delete();
   migrateSessions();
@@ -85,13 +89,18 @@ final class ChatHost implements AutoCloseable {
  private static JSONObject find(JSONArray values,String key,String value) throws JSONException {for(int i=0;i<values.length();i++){JSONObject item=values.getJSONObject(i);if(item.optString(key).equals(value))return item;}return null;}
  private static void remove(JSONArray values,String key,String value) throws JSONException {for(int i=values.length()-1;i>=0;i--)if(values.getJSONObject(i).optString(key).equals(value))values.remove(i);}
  private synchronized void migrateSessions() throws Exception {
-  JSONArray sessions=state.getJSONArray("sessions"),devices=state.getJSONArray("devices");long nowMs=System.currentTimeMillis();boolean changed=false;
-  for(int i=0;i<devices.length();i++){
-   JSONObject device=devices.getJSONObject(i);String legacy=device.optString("token","");
-   if(legacy.isEmpty()||find(sessions,"deviceId",device.optString("id"))!=null)continue;
-   sessions.put(new JSONObject().put("token",legacy).put("deviceId",device.optString("id")).put("created",device.optString("created",now())).put("lastSeen",now()).put("expires",Instant.ofEpochMilli(nowMs+sessionTtl).toString()));changed=true;
-  }
-  if(changed){final JSONArray kept=sessions;change(next->next.put("sessions",kept));}
+  if(state.optInt("schema",1)>=2)return;
+  change(next->{
+   JSONArray devices=next.getJSONArray("devices"),sessions=next.getJSONArray("sessions");long nowMs=System.currentTimeMillis();
+   for(int i=0;i<devices.length();i++){
+    JSONObject device=devices.getJSONObject(i);String legacy=device.optString("token","");
+    if(!legacy.isEmpty()&&find(sessions,"deviceId",device.optString("id"))==null){
+     sessions.put(new JSONObject().put("token",legacy).put("deviceId",device.optString("id")).put("created",device.optString("created",now())).put("lastSeen",now()).put("expires",Instant.ofEpochMilli(nowMs+sessionTtl).toString()));
+    }
+    device.remove("token");
+   }
+   next.put("schema",2);
+  });
  }
  private synchronized void pruneSessions() throws Exception {
   JSONArray sessions=state.getJSONArray("sessions");long nowMs=System.currentTimeMillis();boolean changed=false;
@@ -107,18 +116,19 @@ final class ChatHost implements AutoCloseable {
  private String rawCookie(MiniHttp.Request request){for(String part:request.header("cookie").split(";"))if(part.trim().startsWith("ryadom_sid="))return part.trim().substring(11);return "";}
  private String sessionCookie(String raw){return "ryadom_sid="+raw+"; HttpOnly; SameSite=Strict; Path=/; Max-Age="+(sessionTtl/1000);}
  private static String clearCookie(){return "ryadom_sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";}
- private synchronized JSONObject device(MiniHttp.Request request) throws Exception {
+ private synchronized Auth auth(MiniHttp.Request request) throws Exception {
   String raw=rawCookie(request);if(raw.isEmpty())return null;
-  JSONArray sessions=state.getJSONArray("sessions");JSONObject session=find(sessions,"token",hash(raw));
+  String tokenHash=hash(raw);
+  JSONArray sessions=state.getJSONArray("sessions");JSONObject session=find(sessions,"token",tokenHash);
   if(session==null)return null;
-  if(instant(session.optString("expires"))<System.currentTimeMillis()){removeSession(session.optString("token"));return null;}
+  long expires=instant(session.optString("expires"));
+  if(expires<System.currentTimeMillis()){removeSession(tokenHash);return null;}
   JSONObject device=find(state.getJSONArray("devices"),"id",session.optString("deviceId"));
-  if(device==null){removeSession(session.optString("token"));return null;}
+  if(device==null){removeSession(tokenHash);return null;}
   if(System.currentTimeMillis()-instant(session.optString("lastSeen"))>60000){
-   final String tokenHash=session.optString("token");
    change(next->{JSONObject current=find(next.getJSONArray("sessions"),"token",tokenHash);if(current!=null)current.put("lastSeen",now());});
   }
-  return device;
+  return new Auth(device,tokenHash,expires);
  }
  private synchronized void removeSession(String tokenHash) throws Exception {change(next->remove(next.getJSONArray("sessions"),"token",tokenHash));}
  private static String cleanName(String value){String result=value.replaceAll("[\\x00-\\x1f\\x7f/\\\\]","").trim();return result.isEmpty()?"Файл":result.substring(0,Math.min(result.length(),180));}
@@ -142,6 +152,7 @@ final class ChatHost implements AutoCloseable {
  }
  private synchronized long totalBytes() throws Exception {long sum=0;JSONArray all=state.getJSONArray("files");for(int i=0;i<all.length();i++)sum+=all.getJSONObject(i).optLong("size",0);return sum;}
  private synchronized long deviceBytes(String deviceId) throws Exception {long sum=0;JSONArray all=state.getJSONArray("files");for(int i=0;i<all.length();i++){JSONObject file=all.getJSONObject(i);if(deviceId.equals(file.optString("deviceId")))sum+=file.optLong("size",0);}return sum;}
+ private long reserved(String deviceId){Long value=reserved.get(deviceId);return value==null?0:value;}
  private void logEvent(String type,String detail,String ip){
   try{
    synchronized(this){
@@ -152,9 +163,16 @@ final class ChatHost implements AutoCloseable {
   }catch(Exception ignored){}
  }
  private static String eventData(String type,Object value){return "event: "+type+"\ndata: "+value+"\n\n";}
- private void broadcast(String type,Object value,boolean hostOnly){
-  String data=eventData(type,value);
-  for(Stream stream:streams.values()){if(hostOnly&&!stream.host)continue;if(!stream.queue.offer(data))closeStream(stream);}
+ private void broadcast(String type,Object value,boolean hostOnly){broadcastExcept(null,type,value,hostOnly);}
+ private void broadcastExcept(MiniHttp.Request excluded,String type,Object value,boolean hostOnly){
+  String data=eventData(type,value);long nowMs=System.currentTimeMillis();
+  for(Stream stream:streams.values()){
+   if(stream.request==excluded)continue;
+   if(stream.closed)continue;
+   if(stream.expires<=nowMs){closeStream(stream);continue;}
+   if(hostOnly&&!stream.host)continue;
+   if(!stream.queue.offer(data))closeStream(stream);
+  }
  }
  private void devicesChanged() throws Exception {broadcast("devices",publicDevices(),false);}
  private boolean allowRate(String deviceId,String kind,int limit){
@@ -207,6 +225,14 @@ final class ChatHost implements AutoCloseable {
   }
   if(route.equals("/api/health")&&request.method.equals("GET")){request.json(200,new JSONObject().put("app","ryadom").put("version",VERSION).put("protocol",PROTOCOL).put("name","Рядом на Android").put("tls","1").put("fingerprint",tls.fingerprint).toString());return;}
   if(route.startsWith("/api/local/")){
+   if(route.equals("/api/local/choose-role")&&request.method.equals("POST")){
+    if(!request.loopback())throw new MiniHttp.Failure(403,"Только на этом устройстве");
+    String signal=System.getenv("RYADOM_ROLE_SIGNAL");if(signal==null||signal.isEmpty())throw new MiniHttp.Failure(404,"Не найдено");
+    boolean nativeAllowed=!nativeKey.isEmpty()&&safeEqual(request.header("x-ryadom-native"),nativeKey);
+    Auth session=auth(request);if(!nativeAllowed&&(session==null||!session.device.optBoolean("host")))throw new MiniHttp.Failure(403,"Нужен native-ключ или сессия главного");
+    try{Files.write(Paths.get(signal),"choose".getBytes(StandardCharsets.UTF_8));}catch(Exception e){throw new MiniHttp.Failure(500,"Не удалось сохранить выбор роли");}
+    request.json(200,"{\"ok\":true}");return;
+   }
    nativeOnly(request);
    if(route.equals("/api/local/status")&&request.method.equals("GET")){request.json(200,new JSONObject().put("app","ryadom").put("version",VERSION).put("protocol",PROTOCOL).put("role","host").toString());return;}
    if(route.equals("/api/local/host-token")&&request.method.equals("POST")){
@@ -226,7 +252,7 @@ final class ChatHost implements AutoCloseable {
    sessionReply(request,200,raw,new JSONObject().put("ok",true).put("device",new JSONObject().put("id",device.getString("id")).put("name",device.getString("name")).put("host",true)));return;
   }
   if(route.equals("/api/pair")&&request.method.equals("POST")){
-   synchronized(this){long[] attempt=attempts.get(remote);long nowMs=System.currentTimeMillis();if(attempt==null||attempt[1]<nowMs){attempt=new long[]{0,nowMs+60000};attempts.put(remote,attempt);}if(++attempt[0]>8)throw new MiniHttp.Failure(429,"Слишком много попыток. Подождите минуту");}
+   synchronized(this){long[] attempt=attempts.get(remote);long nowMs=System.currentTimeMillis();if(attempt==null||attempt[1]<nowMs){attempt=new long[]{0,nowMs+60000};attempts.put(remote,attempt);}if(++attempt[0]>pairAttempts)throw new MiniHttp.Failure(429,"Слишком много попыток. Подождите минуту");}
    JSONObject body=body(request);
    final String requestId;final String deviceName;
    synchronized(this){
@@ -260,14 +286,14 @@ final class ChatHost implements AutoCloseable {
    }
    sessionReply(request,200,raw,new JSONObject().put("ok",true).put("device",new JSONObject().put("id",device.getString("id")).put("name",device.getString("name")).put("host",false)));return;
   }
-  JSONObject device=device(request);if(device==null)throw new MiniHttp.Failure(401,"Подключите устройство по коду");
-  String deviceId=device.getString("id");
+  Auth auth=auth(request);if(auth==null)throw new MiniHttp.Failure(401,"Подключите устройство по коду");
+  JSONObject device=auth.device;String deviceId=device.getString("id");
   if(route.equals("/api/state")&&request.method.equals("GET")){
    JSONObject result;
    synchronized(this){
     JSONArray all=state.getJSONArray("messages"),last=new JSONArray();
     for(int i=Math.max(0,all.length()-100);i<all.length();i++)last.put(all.get(i));
-    JSONArray urls=new JSONArray();for(String ip:addresses)urls.put("https://"+ip+":"+port);
+    JSONArray urls=new JSONArray();for(String ip:addresses)urls.put("http://"+ip+":"+port);
     result=new JSONObject().put("me",new JSONObject().put("id",deviceId).put("name",device.getString("name")).put("host",device.optBoolean("host"))).put("devices",publicDevices()).put("messages",last).put("maxFile",MAX_FILE).put("total",all.length()).put("server",new JSONObject().put("addresses",urls).put("protocol",PROTOCOL).put("direct",true).put("localControls",false).put("tls",true).put("fingerprint",tls.fingerprint));
     if(device.optBoolean("host")){
      result.put("pairing",pairing()).put("pendingRequests",pendingList()).put("storage",new JSONObject().put("totalBytes",maxTotal).put("usedBytes",totalBytes()).put("freeBytes",files.getUsableSpace()));
@@ -295,7 +321,7 @@ final class ChatHost implements AutoCloseable {
   }
   if(route.equals("/api/files")&&request.method.equals("POST")){upload(request,device);return;}
   if(route.startsWith("/files/")&&(request.method.equals("GET")||request.method.equals("HEAD"))){download(request,route.substring(7));return;}
-  if(route.equals("/api/events")&&request.method.equals("GET")){stream(request,device);return;}
+  if(route.equals("/api/events")&&request.method.equals("GET")){stream(request,auth);return;}
   if(route.equals("/api/device")&&request.method.equals("PATCH")){
    String name=body(request).optString("name").trim();if(name.isEmpty())throw new MiniHttp.Failure(400,"Укажите имя");
    final String updated=cleanName(name).substring(0,Math.min(cleanName(name).length(),40));
@@ -304,7 +330,7 @@ final class ChatHost implements AutoCloseable {
   }
   if(route.equals("/api/logout")&&request.method.equals("POST")){
    String raw=rawCookie(request);
-   if(!raw.isEmpty())removeSession(hash(raw));
+   if(!raw.isEmpty()){String session=hash(raw);removeSession(session);closeStreams(session,null,"logout");}
    logEvent("logout",device.getString("name"),remote);
    Map<String,String> headers=new LinkedHashMap<>();headers.put("Set-Cookie",clearCookie());
    request.reply(200,"application/json; charset=utf-8","{\"ok\":true}".getBytes(StandardCharsets.UTF_8),headers);return;
@@ -343,6 +369,7 @@ final class ChatHost implements AutoCloseable {
    }
    if(route.equals("/api/host/logout-all")&&request.method.equals("POST")){
     synchronized(this){change(next->next.put("sessions",new JSONArray()));}
+    closeStreams(null,null,"logout_all");
     logEvent("logout_all",device.getString("name"),remote);
     sessionReply(request,200,newSession(device),new JSONObject().put("ok",true));return;
    }
@@ -354,7 +381,7 @@ final class ChatHost implements AutoCloseable {
    if(route.startsWith("/api/host/devices/")&&request.method.equals("DELETE")){
     final String id=route.substring("/api/host/devices/".length());
     synchronized(this){change(next->{JSONArray devices=next.getJSONArray("devices");JSONObject target=find(devices,"id",id);if(target!=null&&!target.optBoolean("host")){remove(devices,"id",id);remove(next.getJSONArray("sessions"),"deviceId",id);}});}
-    for(Stream stream:new ArrayList<>(streams.values()))if(stream.deviceId.equals(id)){stream.closeAfterWrite=true;if(!stream.queue.offer(eventData("revoked",new JSONObject())))closeStream(stream);}
+    closeStreams(null,id,"revoked");
     logEvent("device_revoked",id,remote);
     devicesChanged();request.json(200,"{\"ok\":true}");return;
    }
@@ -364,27 +391,33 @@ final class ChatHost implements AutoCloseable {
   }
   throw new MiniHttp.Failure(404,"Не найдено");
  }
- private void stream(MiniHttp.Request request,JSONObject device) throws Exception {
-  final String deviceId=device.getString("id");final boolean host=device.optBoolean("host");
+ private void stream(MiniHttp.Request request,Auth auth) throws Exception {
+  final String deviceId=auth.device.getString("id");final boolean host=auth.device.optBoolean("host");
+  final Stream stream=new Stream(request,deviceId,host,auth.session,auth.expires);
   synchronized(this){
+   JSONObject session=find(state.getJSONArray("sessions"),"token",auth.session);
+   if(session==null||instant(session.optString("expires"))<=System.currentTimeMillis())throw new MiniHttp.Failure(401,"Сессия истекла. Подключите устройство заново");
+   if(find(state.getJSONArray("devices"),"id",deviceId)==null)throw new MiniHttp.Failure(401,"Доступ устройства отозван");
    int count=deviceStreams.containsKey(deviceId)?deviceStreams.get(deviceId):0;
    if(count>=MAX_STREAMS)throw new MiniHttp.Failure(429,"Слишком много открытых окон чата. Закройте лишние и повторите.");
    deviceStreams.put(deviceId,count+1);
+   streams.put(request,stream);request.detach();
   }
-  Stream stream=new Stream(request,deviceId,host);
   try{
    request.headStream(200,"text/event-stream",null);
-   request.out.write("retry: 1500\n\n".getBytes(StandardCharsets.UTF_8));request.out.flush();
-   streams.put(request,stream);request.detach();
+   JSONArray initial=publicDevices();
+   request.out.write(("retry: 1500\n\n"+eventData("devices",initial)).getBytes(StandardCharsets.UTF_8));request.out.flush();
    sse.execute(()->pump(stream));
+   broadcastExcept(request,"devices",initial,false);
   }catch(RejectedExecutionException e){closeStream(stream);throw new MiniHttp.Failure(503,"Чат останавливается");}
   catch(Exception e){closeStream(stream);throw e;}
-  devicesChanged();
  }
  private void pump(Stream stream){
   try{
    while(!http.closed&&!stream.closed){
-    String data=stream.queue.poll(20,TimeUnit.SECONDS);
+    long nowMs=System.currentTimeMillis();
+    if(stream.expires<=nowMs){try{synchronized(stream.request.out){stream.request.out.write(eventData("expired",new JSONObject()).getBytes(StandardCharsets.UTF_8));stream.request.out.flush();}}catch(Exception ignored){}break;}
+    String data=stream.queue.poll(Math.max(1,Math.min(20000,stream.expires-nowMs)),TimeUnit.MILLISECONDS);
     synchronized(stream.request.out){
      stream.request.out.write((data==null?": alive\n\n":data).getBytes(StandardCharsets.UTF_8));
      stream.request.out.flush();
@@ -399,6 +432,14 @@ final class ChatHost implements AutoCloseable {
   stream.closed=true;streams.remove(stream.request);stream.request.close();
   int count=deviceStreams.containsKey(stream.deviceId)?deviceStreams.get(stream.deviceId):0;if(count<=1)deviceStreams.remove(stream.deviceId);else deviceStreams.put(stream.deviceId,count-1);
  }
+ private void closeStreams(String session,String deviceId,String event){
+  for(Stream stream:new ArrayList<>(streams.values())){
+   boolean match=(session!=null&&session.equals(stream.session))||(deviceId!=null&&deviceId.equals(stream.deviceId))||(session==null&&deviceId==null);
+   if(!match)continue;
+   if(event==null){closeStream(stream);continue;}
+   stream.queue.clear();stream.closeAfterWrite=true;if(!stream.queue.offer(eventData(event,new JSONObject())))closeStream(stream);
+  }
+ }
  private void upload(MiniHttp.Request request,JSONObject device) throws Exception {
   String deviceId=device.getString("id");
   if(!allowRate(deviceId,"up",uploadPerMin))throw new MiniHttp.Failure(429,"Слишком много передач. Подождите минуту");
@@ -412,24 +453,32 @@ final class ChatHost implements AutoCloseable {
    if(old!=null&&old.optString("deviceId").equals(deviceId))already=old;
   }
   if(already!=null){request.discard();request.json(200,already.toString());return;}
-  long used,deviceUsed;
-  synchronized(this){used=totalBytes();deviceUsed=deviceBytes(deviceId);}
-  if(used+size>maxTotal||deviceUsed+size>maxDevice)throw new MiniHttp.Failure(507,"Хранилище заполнено. Удалите старые файлы на главном устройстве");
-  if(files.getUsableSpace()<size+minFree)throw new MiniHttp.Failure(507,"На главном устройстве мало свободного места");
   synchronized(this){
-   if(uploadIds.contains(requestId)||uploads.containsKey(deviceId)&&uploads.get(deviceId)>=2)throw new MiniHttp.Failure(429,"Дождитесь текущей передачи");
+   if(uploadIds.contains(requestId)||(uploads.containsKey(deviceId)&&uploads.get(deviceId)>=2))throw new MiniHttp.Failure(429,"Дождитесь текущей передачи");
+   long used=totalBytes()+reservedTotal,deviceUsed=deviceBytes(deviceId)+reserved(deviceId);
+   if(used+size>maxTotal||deviceUsed+size>maxDevice)throw new MiniHttp.Failure(507,"Хранилище заполнено. Удалите старые файлы на главном устройстве");
+   if(files.getUsableSpace()-reservedTotal<size+minFree)throw new MiniHttp.Failure(507,"На главном устройстве мало свободного места");
    uploadIds.add(requestId);uploads.put(deviceId,(uploads.containsKey(deviceId)?uploads.get(deviceId):0)+1);
+   reservedTotal+=size;reserved.put(deviceId,reserved(deviceId)+size);
   }
   String id=UUID.randomUUID().toString();File temporary=new File(files,id+".part"),file=new File(files,id);boolean committed=false;
   try{
    try(OutputStream out=new FileOutputStream(temporary)){request.transfer(out);}
-   String mime=sniff(temporary);Files.move(temporary.toPath(),file.toPath());
+   String mime=sniff(temporary);
+   synchronized(this){
+    if(totalBytes()+size>maxTotal||deviceBytes(deviceId)+size>maxDevice)throw new MiniHttp.Failure(507,"Хранилище заполнено. Удалите старые файлы на главном устройстве");
+   }
+   if(files.getUsableSpace()<minFree)throw new MiniHttp.Failure(507,"На главном устройстве мало свободного места");
+   Files.move(temporary.toPath(),file.toPath());
    JSONObject value=new JSONObject().put("id",id).put("name",cleanName(request.parameter("name"))).put("mime",mime).put("size",size).put("deviceId",deviceId);
    JSONObject message=addMessage(device,"",value,requestId);
    committed=true;request.json(201,message.toString());
   }finally{
    temporary.delete();if(!committed)file.delete();
-   synchronized(this){uploadIds.remove(requestId);uploads.put(deviceId,Math.max(0,(uploads.containsKey(deviceId)?uploads.get(deviceId):1)-1));}
+   synchronized(this){
+    uploadIds.remove(requestId);uploads.put(deviceId,Math.max(0,(uploads.containsKey(deviceId)?uploads.get(deviceId):1)-1));
+    reservedTotal=Math.max(0,reservedTotal-size);long remaining=reserved(deviceId)-size;if(remaining<=0)reserved.remove(deviceId);else reserved.put(deviceId,remaining);
+   }
   }
  }
  private static String sniff(File file) throws IOException {byte[] bytes=new byte[32];int read;try(InputStream in=new FileInputStream(file)){read=in.read(bytes);}if(read<12)return "application/octet-stream";if(bytes[0]==(byte)137&&bytes[1]==80&&bytes[2]==78&&bytes[3]==71)return "image/png";if(bytes[0]==(byte)255&&bytes[1]==(byte)216&&bytes[2]==(byte)255)return "image/jpeg";String start=new String(bytes,StandardCharsets.ISO_8859_1);if(start.startsWith("GIF87a")||start.startsWith("GIF89a"))return "image/gif";if(start.startsWith("RIFF")&&start.substring(8,12).equals("WEBP"))return "image/webp";if(start.substring(4,8).equals("ftyp"))return start.substring(8,12).matches("(hei.|mif.|avi.)")?"application/octet-stream":"video/mp4";if(bytes[0]==26&&bytes[1]==69&&bytes[2]==(byte)223&&bytes[3]==(byte)163)return "video/webm";return "application/octet-stream";}
@@ -454,9 +503,13 @@ final class ChatHost implements AutoCloseable {
   for(Stream stream:new ArrayList<>(streams.values()))closeStream(stream);
   http.close();sse.shutdownNow();
  }
+ private static final class Auth {
+  final JSONObject device;final String session;final long expires;
+  Auth(JSONObject device,String session,long expires){this.device=device;this.session=session;this.expires=expires;}
+ }
  private static final class Stream {
-  final MiniHttp.Request request;final String deviceId;final boolean host;final BlockingQueue<String> queue=new ArrayBlockingQueue<>(256);
+  final MiniHttp.Request request;final String deviceId;final boolean host;final String session;final long expires;final BlockingQueue<String> queue=new ArrayBlockingQueue<>(256);
   volatile boolean closed,closeAfterWrite;
-  Stream(MiniHttp.Request request,String deviceId,boolean host){this.request=request;this.deviceId=deviceId;this.host=host;}
+  Stream(MiniHttp.Request request,String deviceId,boolean host,String session,long expires){this.request=request;this.deviceId=deviceId;this.host=host;this.session=session;this.expires=expires;}
  }
 }

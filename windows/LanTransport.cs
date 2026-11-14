@@ -63,12 +63,13 @@ namespace Ryadom {
   private readonly string clientSni,pinKey;
   private readonly string pinFile;
   private readonly Action<string> tlsError;
+  private readonly int handshakeTimeoutMs;
   private readonly HashSet<TcpClient> sockets=new HashSet<TcpClient>();
   private readonly Dictionary<string,int> byIp=new Dictionary<string,int>();
   private volatile bool disposed;
   public int Port {get{return ((IPEndPoint)listener.LocalEndpoint).Port;}}
-  public TcpBridge(string address,int port,Func<TcpClient,TcpClient> factory,Func<TcpClient,byte[]> header,Action<TcpClient> config,Action<Socket> listenerConfig=null,bool useServerTls=false,X509Certificate2 certificate=null,bool useClientTls=false,string sni=null,string pin=null,Action<string> tlsErrorHandler=null,string pinStore=null) {
-   connect=factory;preface=header;configure=config;serverCertificate=certificate;serverTls=useServerTls;clientTls=useClientTls;clientSni=sni;pinKey=pin;tlsError=tlsErrorHandler;pinFile=pinStore??TlsIdentity.PinFile;
+  public TcpBridge(string address,int port,Func<TcpClient,TcpClient> factory,Func<TcpClient,byte[]> header,Action<TcpClient> config,Action<Socket> listenerConfig=null,bool useServerTls=false,X509Certificate2 certificate=null,bool useClientTls=false,string sni=null,string pin=null,Action<string> tlsErrorHandler=null,string pinStore=null,int handshakeTimeout=10000) {
+   connect=factory;preface=header;configure=config;serverCertificate=certificate;serverTls=useServerTls;clientTls=useClientTls;clientSni=sni;pinKey=pin;tlsError=tlsErrorHandler;pinFile=pinStore??TlsIdentity.PinFile;handshakeTimeoutMs=handshakeTimeout;
    listener=new TcpListener(IPAddress.Parse(address),port);listener.Server.ExclusiveAddressUse=true;if(listenerConfig!=null)listenerConfig(listener.Server);listener.Start(64);Task.Run((Func<Task>)Accept);
   }
   private async Task Accept(){
@@ -84,12 +85,32 @@ namespace Ryadom {
    }
   }
   private void Release(TcpClient incoming,string ip){lock(sockets){sockets.Remove(incoming);int n;if(byIp.TryGetValue(ip,out n)){if(n<=1)byIp.Remove(ip);else byIp[ip]=n-1;}}}
+  // A TCP client can connect and never send ClientHello. The handshake therefore needs its own
+  // absolute deadline in addition to the idle timer, which starts only after the handshake.
+  private void Handshake(Action action,TcpClient first,TcpClient second) {
+   Exception failure=null;
+   Task task=Task.Run(()=>{try{action();}catch(Exception e){failure=e;}});
+   if(!task.Wait(handshakeTimeoutMs)) {
+    try{first.Close();}catch{}
+    if(second!=null){try{second.Close();}catch{}}
+    throw new IOException("Истекло время защищённого рукопожатия");
+   }
+   if(failure==null)return;
+   var auth=failure as AuthenticationException;
+   if(auth!=null)throw auth;
+   throw new IOException("Не удалось установить защищённое соединение",failure);
+  }
   private async Task Relay(TcpClient incoming,string ip) {
    TcpClient remote=null;Stream incomingStream=null,remoteStream=null;Timer idle=null;int lastActivity=Environment.TickCount;
    try {
     configure(incoming);incoming.NoDelay=true;
     incomingStream=incoming.GetStream();
-    if(serverTls){var ssl=new SslStream(incomingStream,false);ssl.AuthenticateAsServer(serverCertificate,false,Tls12,false);incomingStream=ssl;}
+    if(serverTls){
+     incoming.ReceiveTimeout=handshakeTimeoutMs;incoming.SendTimeout=handshakeTimeoutMs;
+     var ssl=new SslStream(incomingStream,false);
+     Handshake(()=>ssl.AuthenticateAsServer(serverCertificate,false,Tls12,false),incoming,null);
+     incoming.ReceiveTimeout=0;incoming.SendTimeout=0;incomingStream=ssl;
+    }
     remote=connect(incoming);lock(sockets)sockets.Add(remote);
     remoteStream=remote.GetStream();
     if(clientTls){
@@ -100,8 +121,9 @@ namespace Ryadom {
       bool ok=TlsIdentity.Validate(pinKey??"host",cert2,pinFile,out failure);
       return ok;
      });
-     try{ssl.AuthenticateAsClient(clientSni??"ryadom.local",null,Tls12,false);}catch(AuthenticationException){if(tlsError!=null)tlsError(failure??"Не удалось установить защищённое соединение с главным устройством.");throw;}
-     remoteStream=ssl;
+     remote.ReceiveTimeout=handshakeTimeoutMs;remote.SendTimeout=handshakeTimeoutMs;
+     try{Handshake(()=>ssl.AuthenticateAsClient(clientSni??"ryadom.local",null,Tls12,false),remote,null);}catch(AuthenticationException){if(tlsError!=null)tlsError(failure??"Не удалось установить защищённое соединение с главным устройством.");throw;}
+     remote.ReceiveTimeout=0;remote.SendTimeout=0;remoteStream=ssl;
     }
     byte[] prefix=preface(incoming);if(prefix.Length>0)await remoteStream.WriteAsync(prefix,0,prefix.Length);
     idle=new Timer(_=>{if(Environment.TickCount-lastActivity>IdleTimeoutMs){try{incoming.Close();}catch{}try{remote.Close();}catch{}}},null,30000,30000);
