@@ -227,6 +227,7 @@ test('clear reports a partial cleanup when a file cannot be unlinked', async () 
  assert.equal(repeated.data.cleanupPending, true);
  assert.equal(repeated.data.freedBytes, 0);
  fs.rmSync(disk, { recursive: true, force: true });
+ fs.writeFileSync(disk, 'payload');
  await stop();
  await start();
  const recovered = await req('/api/operations/clear-locked-op', { cookie: host });

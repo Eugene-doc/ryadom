@@ -15,6 +15,7 @@ test('Windows shell uses WebView2 identity and embedded SDK', () => {
  assert.match(window, /Downloads.*Рядом|Рядом.*Downloads/s);
  assert.match(window, /Guid\.NewGuid/);
  assert.match(window, /UserDataFolder/);
+ assert.match(window, /scriptsReady/);
  assert.match(launcher, /Ryadom\.Chat/);
  assert.match(launcher, /SetCurrentProcessExplicitAppUserModelID/);
  assert.match(launcher, /new ChatWindow/);

@@ -49,6 +49,7 @@ namespace Ryadom {
   private readonly Action<Exception> failure;
   private string pendingUrl;
   private bool allowClose, failed;
+  private volatile bool scriptsReady;
   public ChatWindow(string url) : this(url, null) { }
   public ChatWindow(string url, Action<Exception> onFailure) {
    failure = onFailure;
@@ -79,7 +80,7 @@ namespace Ryadom {
   }
   public void Navigate(string url) {
    pendingUrl = url;
-   if (view.CoreWebView2 != null) view.CoreWebView2.Navigate(url);
+   if (scriptsReady && view.CoreWebView2 != null) view.CoreWebView2.Navigate(url);
    Show(); if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate();
   }
   public void CloseForExit() { allowClose = true; Close(); }
@@ -103,6 +104,7 @@ namespace Ryadom {
     };
     core.AddScriptToExecuteOnDocumentCreatedAsync("window.ryadom={appVersion:'" + VersionText().Replace("'", "\\'") + "',openDownloads:function(){window.chrome.webview.postMessage('openDownloads');}};").ContinueWith(task => {
      if (task.IsFaulted) { Fail(task.Exception); return; }
+     scriptsReady = true;
      if (string.IsNullOrEmpty(pendingUrl)) return;
      try { BeginInvoke(new Action(() => { if (view.CoreWebView2 != null) view.CoreWebView2.Navigate(pendingUrl); })); } catch { }
     });
@@ -111,6 +113,7 @@ namespace Ryadom {
    catch (Exception e) { Fail(e); }
   }
   private void Fail(Exception e) {
+   if (InvokeRequired) { try { BeginInvoke(new Action(() => Fail(e))); } catch { } return; }
    if (failed) return; failed = true;
    try { Hide(); } catch { }
    if (failure != null) { try { failure(e); } catch { } }

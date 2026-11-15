@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const icon = name => { const s=document.createElementNS('http://www.w3.org/2000/svg','svg');const u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href',`#i-${name}`);s.append(u);return s; };
 const el = (tag,cls,text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, stateGeneration=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
+let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, clearOperationId=null, stateGeneration=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
 const uuid=()=>{if(crypto.randomUUID)return crypto.randomUUID();const b=crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;return [...b].map((v,i)=>([4,6,8,10].includes(i)?'-':'')+v.toString(16).padStart(2,'0')).join('');};
 const sizeText=n=>n<1024?`${n} Б`:n<1024*1024?`${(n/1024).toFixed(0)} КБ`:`${(n/1024/1024).toFixed(n<10*1024*1024?1:0)} МБ`;
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
@@ -20,7 +20,7 @@ function applyState(data,generation=stateGeneration){
  const incoming=data.chat||{id:'legacy',revision:0,deletionRevision:0,epoch:0};
  if(chat&&(incoming.revision<chat.revision||(incoming.deletionRevision??0)<(chat.deletionRevision??0)))return;
  const reset=chat&&(chat.id!==incoming.id||(chat.deletionRevision??0)!==(incoming.deletionRevision??0)||chat.epoch!==incoming.epoch);chat=incoming;
- if(reset){messages.clear();canLoadOlder=false;}
+ if(reset){messages.clear();canLoadOlder=false;stateGeneration++;}
  $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;
  $('app-version').textContent=`Приложение ${(typeof window.ryadom?.appVersion==='function'?window.ryadom.appVersion():window.ryadom?.appVersion)||'—'} · главное ${data.server.version||'—'}`;
  renderDevices();renderMessages();renderPending();updateButtons();
@@ -37,9 +37,9 @@ function connectEvents(){
  events?.close();events=new EventSource('/api/events');
  events.onopen=()=>{online=true;renderConnection();sync();};
  events.onerror=()=>{online=false;renderConnection();sync();};
- events.addEventListener('message',e=>{const m=JSON.parse(e.data);stateGeneration++;messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
- events.addEventListener('message_deleted',e=>{const d=JSON.parse(e.data);stateGeneration++;const old=messages.get(d.id);messages.delete(d.id);if(chat){chat.revision=Math.max(chat.revision??0,d.revision??0);chat.deletionRevision=Math.max(chat.deletionRevision??0,d.deletionRevision??0);}if(old?.file&&$('full-image').src.includes(old.file.id)&&$('image-dialog').open)$('image-dialog').close();const node=$('messages').querySelector(`[data-key="${CSS.escape(d.id)}"]`);node?.remove();renderMessages();});
- events.addEventListener('chat_cleared',e=>{const d=JSON.parse(e.data);stateGeneration++;messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:Math.max(chat?.revision??0,d.revision??0),deletionRevision:Math.max(chat?.deletionRevision??0,d.deletionRevision??0),epoch:d.epoch??chat?.epoch??0};if($('image-dialog').open)$('image-dialog').close();renderMessages(true);toast(d.cleanupPending?'Чат очищен, но некоторые файлы остались на диске. Повторите очистку позже.':'Чат и файлы очищены');});
+ events.addEventListener('message',e=>{const m=JSON.parse(e.data);if(chat&&((typeof m.revision==='number'&&m.revision<chat.revision)||(typeof m.epoch==='number'&&m.epoch<chat.epoch)))return;stateGeneration++;if(chat)chat.revision=Math.max(chat.revision??0,m.revision??0);messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
+ events.addEventListener('message_deleted',e=>{const d=JSON.parse(e.data);if(chat&&(d.deletionRevision??0)<(chat.deletionRevision??0))return;stateGeneration++;const old=messages.get(d.id);messages.delete(d.id);if(chat){chat.revision=Math.max(chat.revision??0,d.revision??0);chat.deletionRevision=Math.max(chat.deletionRevision??0,d.deletionRevision??0);}if(old?.file&&$('full-image').src.includes(old.file.id)&&$('image-dialog').open)$('image-dialog').close();const node=$('messages').querySelector(`[data-key="${CSS.escape(d.id)}"]`);node?.remove();renderMessages();});
+ events.addEventListener('chat_cleared',e=>{const d=JSON.parse(e.data);if(chat&&((d.epoch??0)<chat.epoch||(d.revision??0)<chat.revision))return;stateGeneration++;messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:Math.max(chat?.revision??0,d.revision??0),deletionRevision:Math.max(chat?.deletionRevision??0,d.deletionRevision??0),epoch:d.epoch??chat?.epoch??0};clearOperationId=null;if($('clear-dialog').open)$('clear-dialog').close();if($('image-dialog').open)$('image-dialog').close();renderMessages(true);toast(d.cleanupPending?'Чат очищен, но некоторые файлы остались на диске. Повторите очистку позже.':'Чат и файлы очищены');});
  events.addEventListener('devices',e=>{devices=JSON.parse(e.data);renderDevices();});
  events.addEventListener('pair_request',e=>{if(me?.host){sync();toast('Новый запрос на подключение');if(!$('settings-dialog').open)openSettings();}});
  events.addEventListener('pairing',()=>{if(me?.host)sync();});
@@ -99,7 +99,7 @@ async function deleteMessage(){
  const button=$('delete-confirm');button.disabled=true;let done=false;
  try{
   const result=await api(`/api/messages/${encodeURIComponent(message.id)}`,'DELETE');
-  messages.delete(message.id);if(chat){chat.revision=Math.max(chat.revision??0,result.revision??0);chat.deletionRevision=Math.max(chat.deletionRevision??0,result.deletionRevision??0);}
+  stateGeneration++;messages.delete(message.id);if(chat){chat.revision=Math.max(chat.revision??0,result.revision??0);chat.deletionRevision=Math.max(chat.deletionRevision??0,result.deletionRevision??0);}
   if(message.file&&$('full-image').src.includes(message.file.id)&&$('image-dialog').open)$('image-dialog').close();
   $('delete-dialog').close();renderMessages();toast(result.freedBytes?`Удалено, освобождено ${sizeText(result.freedBytes)}`:'Сообщение удалено');done=true;
  }catch(e){toast(e.message);}
@@ -108,18 +108,19 @@ async function deleteMessage(){
 async function openClearDialog(){
  if(!me?.host)return;
  try{
-  const preview=await api('/api/chat/clear/preview');clearRevision=preview.revision;
+  const preview=await api('/api/chat/clear/preview');clearRevision=preview.revision;clearOperationId=uuid();
   $('clear-summary').textContent=`Будет удалено ${preview.activeMessages} сообщений и ${preview.activeFiles} файлов (${sizeText(preview.bytes)}). Незавершённых передач: ${preview.tempFiles}.`;
   $('clear-dialog').showModal();
  }catch(e){toast(e.message);}
 }
 async function clearChat(){
- const button=$('clear-confirm');button.disabled=true;
+ const button=$('clear-confirm');button.disabled=true;const generation=stateGeneration;const operationId=clearOperationId||uuid();clearOperationId=operationId;
  try{
-  const result=await api('/api/chat/clear','POST',{confirm:true,revision:clearRevision,operationId:uuid()});
-  messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:result.revision,deletionRevision:result.deletionRevision??chat?.deletionRevision??0,epoch:result.epoch};
+  const result=await api('/api/chat/clear','POST',{confirm:true,revision:clearRevision,operationId});
+  if(generation!==stateGeneration||(chat&&(result.epoch<chat.epoch||result.revision<chat.revision))){$('clear-dialog').close();return;}
+  stateGeneration++;messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:result.revision,deletionRevision:result.deletionRevision??chat?.deletionRevision??0,epoch:result.epoch};
   if($('image-dialog').open)$('image-dialog').close();
-  $('clear-dialog').close();renderMessages(true);
+  $('clear-dialog').close();clearOperationId=null;renderMessages(true);
   toast(result.cleanupPending?`История очищена, но не все файлы удалены (${sizeText(result.freedBytes)}).`:`Чат и файлы очищены. Освобождено ${sizeText(result.freedBytes)}.`);
  }catch(e){toast(e.message);}
  finally{button.disabled=false;}
