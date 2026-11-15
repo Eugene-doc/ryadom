@@ -3,5 +3,5 @@ using System.Reflection;
 [assembly: AssemblyDescription("Личный миничат для ваших устройств в одной домашней сети")]
 [assembly: AssemblyCompany("Ryadom")]
 [assembly: AssemblyProduct("Рядом — личный чат")]
-[assembly: AssemblyVersion("0.2.1.0")]
-[assembly: AssemblyFileVersion("0.2.1.0")]
+[assembly: AssemblyVersion("0.3.0.0")]
+[assembly: AssemblyFileVersion("0.3.0.0")]

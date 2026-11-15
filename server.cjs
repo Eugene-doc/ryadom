@@ -8,8 +8,8 @@ const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const { DatabaseSync } = require('node:sqlite');
 const sea = require('node:sea');
-const VERSION = '0.2.1';
-const PROTOCOL = 2;
+const VERSION = '0.3.0';
+const PROTOCOL = 3;
 const MAX_FILE = 512 * 1024 * 1024;
 const PORT = Number(process.env.RYADOM_PORT || 4280);
 const DATA = process.env.RYADOM_DATA || path.join(process.env.LOCALAPPDATA || os.homedir(), 'Ryadom');
@@ -34,13 +34,27 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, deviceId TEXT NOT NULL, deviceName TEXT NOT NULL, text TEXT NOT NULL, file TEXT, created TEXT NOT NULL, requestId TEXT UNIQUE NOT NULL);
  CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, name TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, deviceId TEXT);
  CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, deviceId TEXT NOT NULL, created TEXT NOT NULL, lastSeen TEXT NOT NULL, expires TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, detail TEXT, ip TEXT, created TEXT NOT NULL);`);
+ CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, detail TEXT, ip TEXT, created TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, ownerDeviceId TEXT, created TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0);
+ CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, type TEXT NOT NULL, chatId TEXT NOT NULL, actorId TEXT, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, result TEXT, error TEXT);`);
 function columnExists(table, column) { try { return db.prepare(`PRAGMA table_info(${table})`).all().some(x => x.name === column); } catch { return true; } }
 if (!columnExists('files', 'deviceId')) { try { db.exec('ALTER TABLE files ADD COLUMN deviceId TEXT'); } catch {} }
+if (!columnExists('messages', 'chatId')) { try { db.exec("ALTER TABLE messages ADD COLUMN chatId TEXT NOT NULL DEFAULT 'legacy'"); } catch {} }
+if (!columnExists('messages', 'deletedAt')) { try { db.exec('ALTER TABLE messages ADD COLUMN deletedAt TEXT'); } catch {} }
+if (!columnExists('messages', 'deletedBy')) { try { db.exec('ALTER TABLE messages ADD COLUMN deletedBy TEXT'); } catch {} }
+if (!columnExists('files', 'chatId')) { try { db.exec("ALTER TABLE files ADD COLUMN chatId TEXT NOT NULL DEFAULT 'legacy'"); } catch {} }
+if (!columnExists('files', 'messageId')) { try { db.exec('ALTER TABLE files ADD COLUMN messageId TEXT'); } catch {} }
+if (!columnExists('files', 'state')) { try { db.exec("ALTER TABLE files ADD COLUMN state TEXT NOT NULL DEFAULT 'ready'"); } catch {} }
+db.prepare("INSERT OR IGNORE INTO chats (id,type,title,ownerDeviceId,created,revision,epoch) VALUES ('legacy','legacy','Свои устройства',NULL,?,0,0)").run(new Date().toISOString());
+for (const row of db.prepare("SELECT id,file FROM messages WHERE file IS NOT NULL AND deletedAt IS NULL").all()) {
+ try { const file = JSON.parse(row.file); if (file && file.id) db.prepare('UPDATE files SET messageId=? WHERE id=?').run(row.id, file.id); } catch {}
+}
+db.exec('PRAGMA user_version=3');
 
 const sha = x => crypto.createHash('sha256').update(x).digest('hex');
 const now = () => new Date().toISOString();
 const iso = ms => new Date(ms).toISOString();
+function chatRow() { return db.prepare('SELECT * FROM chats WHERE id=?').get('legacy'); }
 const address = x => String(x || '').replace(/^::ffff:/, '');
 function safeEqual(a, b) { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
 function isPrivate(ip) {
@@ -114,7 +128,7 @@ function closeClients(match, type) {
 function message(row) { return { ...row, file: row.file ? JSON.parse(row.file) : null }; }
 function addMessage(d, text, file, requestId, announce = true) {
  const old = db.prepare('SELECT * FROM messages WHERE requestId=?').get(requestId);
- if (old) { if (old.deviceId !== d.id) throw error(409, 'Повторите отправку'); return message(old); }
+ if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); if (old.deviceId !== d.id) throw error(409, 'Повторите отправку'); return message(old); }
  const id = crypto.randomUUID();
  db.prepare('INSERT INTO messages (id,deviceId,deviceName,text,file,created,requestId) VALUES (?,?,?,?,?,?,?)').run(id, d.id, d.name, text, file ? JSON.stringify(file) : null, now(), requestId);
  const result = message(db.prepare('SELECT * FROM messages WHERE id=?').get(id));
@@ -275,18 +289,19 @@ const server = http.createServer(async (req, res) => {
   }
   const d = device(req); if (!d) throw error(401, 'Подключите устройство по коду');
   if (route === '/api/state' && req.method === 'GET') {
-   const messages = db.prepare('SELECT * FROM messages ORDER BY seq DESC LIMIT 100').all().reverse().map(message);
-   const state = { me: { id: d.id, name: d.name, host: !!d.host }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
+   const chat = chatRow();
+   const messages = db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL ORDER BY seq DESC LIMIT 100').all().reverse().map(message);
+   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, revision: chat.revision, epoch: chat.epoch }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
    if (d.host) { state.pairing = pairing; state.pendingRequests = pendingList(); state.storage = { totalBytes: MAX_TOTAL_BYTES, usedBytes: totalBytes(), freeBytes: freeDiskBytes() }; }
    return send(res, 200, state);
   }
   if (route === '/api/messages' && req.method === 'GET') {
    if (url.searchParams.has('after')) {
     const after = Math.max(0, Number(url.searchParams.get('after')) || 0);
-    return send(res, 200, db.prepare('SELECT * FROM messages WHERE seq>? ORDER BY seq LIMIT 100').all(after).map(message));
+    return send(res, 200, db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL AND seq>? ORDER BY seq LIMIT 100').all(after).map(message));
    }
    const before = Number(url.searchParams.get('before')) || Number.MAX_SAFE_INTEGER;
-   return send(res, 200, db.prepare('SELECT * FROM messages WHERE seq<? ORDER BY seq DESC LIMIT 100').all(before).reverse().map(message));
+   return send(res, 200, db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL AND seq<? ORDER BY seq DESC LIMIT 100').all(before).reverse().map(message));
   }
   if (route === '/api/messages' && req.method === 'POST') {
    if (!allowRate(d.id, 'msg', MSG_PER_MIN)) throw error(429, 'Слишком часто. Подождите минуту');

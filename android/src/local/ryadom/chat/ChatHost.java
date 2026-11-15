@@ -18,7 +18,7 @@ import java.util.concurrent.*;
 final class ChatHost implements AutoCloseable {
  interface Assets {byte[] read(String name) throws IOException;}
  interface Mutation {void apply(JSONObject next) throws Exception;}
- static final String VERSION="0.2.2";static final int PROTOCOL=2;
+ static final String VERSION="0.3.0";static final int PROTOCOL=3;
  static final long MAX_FILE=512L*1024*1024;
  static final int MAX_STREAMS=8,MAX_EVENT_LOG=500,MAX_PENDING_DEFAULT=5;
  final File directory,files,stateFile;final Assets assets;final List<String> addresses;final int port;
@@ -60,10 +60,14 @@ final class ChatHost implements AutoCloseable {
   if(!state.has("sessions"))state.put("sessions",new JSONArray());
   if(!state.has("events"))state.put("events",new JSONArray());
   if(!state.has("seq"))state.put("seq",0);
-  if(fresh)state.put("schema",2);
+  if(fresh){
+   state.put("schema",3);
+   state.put("chat",new JSONObject().put("id","legacy").put("type","legacy").put("title","Свои устройства").put("revision",0).put("epoch",0));
+  }
   tls=TlsIdentity.ensure(new File(dir,"tls"));
   for(File file:Objects.requireNonNull(files.listFiles()))if(file.getName().endsWith(".part"))file.delete();
   migrateSessions();
+  migrateChatV3();
   newCode(true);
   List<String> plain=new ArrayList<>();plain.add("127.0.0.1");
   List<String> secure=new ArrayList<>();for(String ip:ips)if(!plain.contains(ip)&&!secure.contains(ip))secure.add(ip);
@@ -102,7 +106,35 @@ final class ChatHost implements AutoCloseable {
    next.put("schema",2);
   });
  }
- private synchronized void pruneSessions() throws Exception {
+  private synchronized void migrateChatV3() throws Exception {
+   if(state.optInt("schema",1)>=3)return;
+   change(next->{
+    JSONObject chat=next.optJSONObject("chat");
+    if(chat==null)chat=new JSONObject();
+    if(!chat.has("id"))chat.put("id","legacy");
+    if(!chat.has("type"))chat.put("type","legacy");
+    if(!chat.has("title"))chat.put("title","Свои устройства");
+    if(!chat.has("revision"))chat.put("revision",0);
+    if(!chat.has("epoch"))chat.put("epoch",0);
+    next.put("chat",chat);
+    JSONArray messages=next.getJSONArray("messages"),files=next.getJSONArray("files");
+    Map<String,String> messageFiles=new HashMap<>();
+    for(int i=0;i<messages.length();i++){
+     JSONObject message=messages.getJSONObject(i);
+     if(message.optString("chatId").isEmpty())message.put("chatId","legacy");
+     JSONObject file=message.optJSONObject("file");
+     if(file!=null&&!file.optString("id").isEmpty())messageFiles.put(file.optString("id"),message.optString("id"));
+    }
+    for(int i=0;i<files.length();i++){
+     JSONObject file=files.getJSONObject(i);
+     if(file.optString("chatId").isEmpty())file.put("chatId","legacy");
+     if(file.optString("messageId").isEmpty()&&messageFiles.containsKey(file.optString("id")))file.put("messageId",messageFiles.get(file.optString("id")));
+     if(file.optString("state").isEmpty())file.put("state","ready");
+    }
+    next.put("schema",3);
+   });
+  }
+  private synchronized void pruneSessions() throws Exception {
   JSONArray sessions=state.getJSONArray("sessions");long nowMs=System.currentTimeMillis();boolean changed=false;
   for(int i=sessions.length()-1;i>=0;i--){if(instant(sessions.getJSONObject(i).optString("expires"))<nowMs){sessions.remove(i);changed=true;}}
   if(changed){final JSONArray kept=sessions;change(next->next.put("sessions",kept));}
@@ -294,7 +326,7 @@ final class ChatHost implements AutoCloseable {
     JSONArray all=state.getJSONArray("messages"),last=new JSONArray();
     for(int i=Math.max(0,all.length()-100);i<all.length();i++)last.put(all.get(i));
     JSONArray urls=new JSONArray();for(String ip:addresses)urls.put("http://"+ip+":"+port);
-    result=new JSONObject().put("me",new JSONObject().put("id",deviceId).put("name",device.getString("name")).put("host",device.optBoolean("host"))).put("devices",publicDevices()).put("messages",last).put("maxFile",MAX_FILE).put("total",all.length()).put("server",new JSONObject().put("addresses",urls).put("protocol",PROTOCOL).put("direct",true).put("localControls",false).put("tls",true).put("fingerprint",tls.fingerprint));
+    result=new JSONObject().put("me",new JSONObject().put("id",deviceId).put("name",device.getString("name")).put("host",device.optBoolean("host"))).put("devices",publicDevices()).put("messages",last).put("maxFile",MAX_FILE).put("total",all.length()).put("chat",state.optJSONObject("chat")).put("server",new JSONObject().put("addresses",urls).put("protocol",PROTOCOL).put("direct",true).put("localControls",false).put("tls",true).put("fingerprint",tls.fingerprint));
     if(device.optBoolean("host")){
      result.put("pairing",pairing()).put("pendingRequests",pendingList()).put("storage",new JSONObject().put("totalBytes",maxTotal).put("usedBytes",totalBytes()).put("freeBytes",files.getUsableSpace()));
     }

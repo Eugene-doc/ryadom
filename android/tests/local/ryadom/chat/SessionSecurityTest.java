@@ -72,7 +72,8 @@ public final class SessionSecurityTest {
    try{
     check(request(restartPort,"GET","/api/state","",cookie("ryadom_sid="+rawLegacy)).status==401,"legacy cookie must stay revoked after restart");
     JSONObject state=new JSONObject(new String(Files.readAllBytes(new File(legacy,"chat.json").toPath()),StandardCharsets.UTF_8));
-    check(state.optInt("schema",0)==2,"schema must be 2 after migration: "+state.opt("schema"));
+    check(state.optInt("schema",0)==3,"schema must be 3 after migration: "+state.opt("schema"));
+    check("legacy".equals(state.optJSONObject("chat").optString("id")),"legacy chat metadata must exist");
     JSONArray devices=state.getJSONArray("devices"),sessions=state.getJSONArray("sessions");
     for(int i=0;i<devices.length();i++)check(!devices.getJSONObject(i).has("token"),"legacy device token must be removed");
     for(int i=0;i<sessions.length();i++)check(!"legacy-device".equals(sessions.getJSONObject(i).optString("deviceId")),"legacy session must not be recreated");
