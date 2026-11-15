@@ -22,7 +22,7 @@ public final class HostService extends Service {
   Notification notification=new Notification.Builder(this,"ryadom-host").setSmallIcon(local.ryadom.chat.R.drawable.ic_launcher).setContentTitle("Рядом · этот телефон главный").setContentText("Чат работает в домашней сети, в том числе для ПК по кабелю").setContentIntent(open).setOngoing(true).addAction(new Notification.Action.Builder(null,"Выключить чат",stop).build()).build();
   startForeground(4280,notification);
   try{
-   network=LanNetwork.select(this,null);network.bindProcess();
+   network=LanNetwork.select(this,null);
    WifiManager wifi=(WifiManager)getApplicationContext().getSystemService(WIFI_SERVICE);multicast=wifi.createMulticastLock("Ryadom discovery");multicast.setReferenceCounted(false);multicast.acquire();
    wake=((PowerManager)getSystemService(POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"Ryadom:host");wake.acquire();
    host=new ChatHost(new File(getFilesDir(),"host"),network.ips(),4280,name->{try(InputStream in=getAssets().open(name);ByteArrayOutputStream out=new ByteArrayOutputStream()){MiniHttp.copy(in,out,-1);return out.toByteArray();}},()->new Handler(getMainLooper()).post(this::stopSelf));
@@ -33,5 +33,5 @@ public final class HostService extends Service {
   }catch(Exception e){String message=e.getMessage()==null?"Не удалось запустить чат":e.getMessage();if(LanNetwork.vpnActive(this))message+=" Активен Happ/VPN: Android не позволяет принудительно обойти чужой VPN. В Happ включите маршрут локальной сети напрямую (Direct) или добавьте «Рядом» в исключения.";lastError=message;stopSelf();}
   return START_NOT_STICKY;
  }
- @Override public void onDestroy(){if(callback!=null&&network!=null)try{network.manager.unregisterNetworkCallback(callback);}catch(Exception ignored){}if(discovery!=null)discovery.close();if(host!=null){host.close();host=null;}if(multicast!=null&&multicast.isHeld())multicast.release();if(wake!=null&&wake.isHeld())wake.release();if(network!=null)network.manager.bindProcessToNetwork(null);if(active==this)active=null;super.onDestroy();}
+ @Override public void onDestroy(){if(callback!=null&&network!=null)try{network.manager.unregisterNetworkCallback(callback);}catch(Exception ignored){}if(discovery!=null)discovery.close();if(host!=null){host.close();host=null;}if(multicast!=null&&multicast.isHeld())multicast.release();if(wake!=null&&wake.isHeld())wake.release();if(active==this)active=null;super.onDestroy();}
 }

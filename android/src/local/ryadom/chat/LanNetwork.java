@@ -21,33 +21,38 @@ final class LanNetwork {
  }
  boolean contains(String ip){for(LinkAddress a:addresses)if(sameSubnet(a.getAddress().getAddress(),a.getPrefixLength(),ip))return true;return false;}
  boolean available(){NetworkCapabilities c=manager.getNetworkCapabilities(network);return c!=null&&!c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)&&c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);}
- /** Best effort: under a third-party VPN Android may reject binding the process to Wi-Fi with EPERM. */
- boolean bindProcess(){try{return manager.bindProcessToNetwork(network);}catch(Exception e){return false;}}
  Socket connect(String host,int port) throws IOException {
   if(!contains(host)||!available())throw new IOException("Локальная сеть недоступна");
   IOException failure=null;
-  try{return connect(network.getSocketFactory().createSocket(),host,port);}
+  try{return connect(boundSocket(),host,port);}
   catch(IOException e){
    if(!permissionFailure(e))throw e;
    failure=e;
-  }catch(SecurityException e){failure=new IOException("Android запретил прямой доступ к локальной сети",e);}
-  // The VPN may reject Network.bindSocket with EPERM. An unbound socket still follows the
-  // system route, so Happ can send private addresses directly if its routing says "direct".
+  }
+  // A third-party VPN may reject Network.bindSocket with EPERM. Creating the socket here (rather
+  // than via Network.getSocketFactory, which leaked a descriptor on old Android) lets us close it
+  // deterministically; the unbound retry follows the system route where Happ can use LAN Direct.
   try{return connect(new Socket(),host,port);}
   catch(IOException e){if(failure!=null)e.addSuppressed(failure);throw e;}
  }
+ /** Binds a socket we own, so every failure path can close it. */
+ private Socket boundSocket() throws IOException {
+  Socket socket=new Socket();
+  try{network.bindSocket(socket);return socket;}
+  catch(IOException e){close(socket);throw e;}
+  catch(SecurityException e){close(socket);throw new IOException("Android запретил привязку к локальной сети",e);}
+ }
  private Socket connect(Socket socket,String host,int port) throws IOException {
+  boolean success=false;
   try{
    socket.connect(new InetSocketAddress(InetAddress.getByName(host),port),5000);
-   socket.setSoTimeout(120000);socket.setTcpNoDelay(true);return socket;
-  }catch(IOException e){try{socket.close();}catch(Exception ignored){}throw e;}
+   socket.setSoTimeout(120000);socket.setTcpNoDelay(true);success=true;return socket;
+  }
+  catch(IOException e){throw e;}
+  catch(SecurityException e){throw new IOException("Android запретил подключение к локальной сети",e);}
+  finally{if(!success)close(socket);}
  }
- HttpURLConnection connection(URL url) throws IOException {
-  if(!contains(url.getHost())||!available())throw new IOException("Локальная сеть недоступна");
-  try{return (HttpURLConnection)network.openConnection(url,java.net.Proxy.NO_PROXY);}
-  catch(IOException e){if(!permissionFailure(e))throw e;return (HttpURLConnection)url.openConnection(java.net.Proxy.NO_PROXY);}
-  catch(SecurityException e){return (HttpURLConnection)url.openConnection(java.net.Proxy.NO_PROXY);}
- }
+ private static void close(Socket socket){try{socket.close();}catch(Exception ignored){}}
  List<String> ips(){List<String> result=new ArrayList<>();for(LinkAddress a:addresses)result.add(a.getAddress().getHostAddress());return result;}
  static boolean vpnActive(Context context){
   try{
