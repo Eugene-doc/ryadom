@@ -55,6 +55,7 @@ const sha = x => crypto.createHash('sha256').update(x).digest('hex');
 const now = () => new Date().toISOString();
 const iso = ms => new Date(ms).toISOString();
 function chatRow() { return db.prepare('SELECT * FROM chats WHERE id=?').get('legacy'); }
+function bumpRevision() { db.prepare('UPDATE chats SET revision=revision+1 WHERE id=?').run('legacy'); return chatRow().revision; }
 const address = x => String(x || '').replace(/^::ffff:/, '');
 function safeEqual(a, b) { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
 function isPrivate(ip) {
@@ -130,8 +131,9 @@ function addMessage(d, text, file, requestId, announce = true) {
  const old = db.prepare('SELECT * FROM messages WHERE requestId=?').get(requestId);
  if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); if (old.deviceId !== d.id) throw error(409, 'Повторите отправку'); return message(old); }
  const id = crypto.randomUUID();
- db.prepare('INSERT INTO messages (id,deviceId,deviceName,text,file,created,requestId) VALUES (?,?,?,?,?,?,?)').run(id, d.id, d.name, text, file ? JSON.stringify(file) : null, now(), requestId);
+ db.prepare('INSERT INTO messages (id,deviceId,deviceName,text,file,created,requestId,chatId) VALUES (?,?,?,?,?,?,?,?)').run(id, d.id, d.name, text, file ? JSON.stringify(file) : null, now(), requestId, 'legacy');
  const result = message(db.prepare('SELECT * FROM messages WHERE id=?').get(id));
+ result.revision = bumpRevision();
  if (announce) broadcast('message', result); return result;
 }
 function cleanName(value) { return String(value || '').replace(/[\x00-\x1f\x7f/\\]/g, '').trim().slice(0, 180) || 'Файл'; }
@@ -310,6 +312,34 @@ const server = http.createServer(async (req, res) => {
    const requestId = String(body.requestId || crypto.randomUUID()).slice(0, 80);
    return send(res, 201, addMessage(d, text, null, requestId));
   }
+  if (route.startsWith('/api/messages/') && req.method === 'DELETE') {
+   const id = decodeURIComponent(route.slice('/api/messages/'.length));
+   if (!id || id.length > 80) throw error(400, 'Некорректное сообщение');
+   const row = db.prepare('SELECT * FROM messages WHERE id=?').get(id);
+   if (!row) throw error(404, 'Сообщение не найдено');
+   if (row.deletedAt) return send(res, 200, { ok: true, id, chatId: 'legacy', revision: chatRow().revision, freedBytes: 0, cleanupPending: false });
+   if (row.deviceId !== d.id && !d.host) throw error(403, 'Удалить можно только своё сообщение');
+   let file = null;
+   try { file = row.file ? JSON.parse(row.file) : null; } catch {}
+   const fileRow = file && file.id ? db.prepare('SELECT * FROM files WHERE id=?').get(file.id) : null;
+   const freedBytes = fileRow ? fileRow.size : 0;
+   let revision;
+   db.exec('BEGIN');
+   try {
+    db.prepare('UPDATE messages SET deletedAt=?,deletedBy=?,text=?,file=NULL WHERE id=?').run(now(), d.id, '', id);
+    if (fileRow) db.prepare("UPDATE files SET state='deleting' WHERE id=?").run(fileRow.id);
+    revision = bumpRevision();
+    db.exec('COMMIT');
+   } catch (e) { db.exec('ROLLBACK'); throw e; }
+   let cleanupPending = false;
+   if (fileRow) {
+    try { fs.rmSync(path.join(uploads, fileRow.id), { force: true }); db.prepare('DELETE FROM files WHERE id=?').run(fileRow.id); }
+    catch { cleanupPending = true; }
+   }
+   logEvent('message_deleted', id, address(peer));
+   broadcast('message_deleted', { id, chatId: 'legacy', revision, freedBytes, deletedBy: d.id, cleanupPending });
+   return send(res, 200, { ok: true, id, chatId: 'legacy', revision, freedBytes, cleanupPending });
+  }
   if (route === '/api/files' && req.method === 'POST') {
    if (!allowRate(d.id, 'up', UPLOAD_PER_MIN)) throw error(429, 'Слишком много передач. Подождите минуту');
    const size = Number(req.headers['content-length']);
@@ -331,14 +361,15 @@ const server = http.createServer(async (req, res) => {
     fs.renameSync(tmp, final);
     db.exec('BEGIN');
     let result;
-    try { db.prepare('INSERT INTO files (id,name,mime,size,deviceId) VALUES (?,?,?,?,?)').run(id, f.name, f.mime, count, d.id); result = addMessage(d, '', f, requestId, false); db.exec('COMMIT'); committed = true; }
+    try { result = addMessage(d, '', f, requestId, false); db.prepare('INSERT INTO files (id,name,mime,size,deviceId,chatId,messageId,state) VALUES (?,?,?,?,?,?,?,?)').run(id, f.name, f.mime, count, d.id, 'legacy', result.id, 'ready'); db.exec('COMMIT'); committed = true; }
     catch (e) { db.exec('ROLLBACK'); throw e; }
     broadcast('message', result);
     return send(res, 201, result);
    } finally { release(); uploadJobs.delete(requestId); activeUploads.set(d.id, Math.max(0, (activeUploads.get(d.id) || 1) - 1)); fs.rmSync(tmp, { force: true }); if (!committed) fs.rmSync(final, { force: true }); }
   }
   if (route.startsWith('/files/') && ['GET', 'HEAD'].includes(req.method)) {
-   const f = db.prepare('SELECT * FROM files WHERE id=?').get(route.slice(7)); if (!f) throw error(404, 'Файл не найден');
+   const f = db.prepare('SELECT * FROM files WHERE id=?').get(route.slice(7));
+   if (!f || f.state !== 'ready' || f.chatId !== 'legacy' || !f.messageId || !db.prepare('SELECT id FROM messages WHERE id=? AND deletedAt IS NULL').get(f.messageId)) throw error(404, 'Файл не найден');
    const disk = path.join(uploads, f.id); if (!fs.existsSync(disk)) throw error(404, 'Файл удалён с компьютера');
    let start = 0, end = f.size - 1, status = 200;
    if (req.headers.range) {
