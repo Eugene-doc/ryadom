@@ -6,6 +6,7 @@
 
 - **Node.js runtime.** В `Ryadom-Windows.exe` встроен Node.js (неизменённый бинарник); серверная часть — `server.cjs`. Node.js распространяется по лицензии MIT и включает компоненты под другими свободными лицензиями (V8, OpenSSL, ICU и др.). Полный текст лицензий — в файле [`Node-LICENSE.txt`](https://github.com/Eugene-doc/ryadom/releases) в составе выпуска и в репозитории Node.js: <https://github.com/nodejs/node/blob/main/LICENSE>.
 - **.NET Framework / Windows Forms** — системный компонент Windows, отдельно не распространяется.
+- **Microsoft WebView2 SDK 1.0.4314.35** — встроен в Windows-сборку для собственного окна; распространяется по лицензии Microsoft (BSD-подобная, см. [third_party/webview2-LICENSE.txt](third_party/webview2-LICENSE.txt)) и содержит уведомления [third_party/webview2-NOTICE.txt](third_party/webview2-NOTICE.txt). Для работы нужен установленный **Microsoft Edge WebView2 Runtime** (системный компонент Microsoft, отдельно не входит в EXE).
 
 ## Android-сборка
 

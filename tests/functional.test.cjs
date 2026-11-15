@@ -189,6 +189,26 @@ test('clear rejects non-host', async () => {
  assert.equal(clear.r.status, 403);
 });
 
+test('clear reports a partial cleanup when a file cannot be unlinked', async () => {
+ const host = await login();
+ const device = await pair(host, 'Занятый файл');
+ const attachment = await upload(device, 'locked.txt', 'clear-locked-1');
+ const disk = [path.join(dir, 'files', attachment.file.id), path.join(dir, 'host', 'files', attachment.file.id)].find(candidate => fs.existsSync(candidate));
+ assert.ok(disk, 'uploaded file path not found');
+ fs.rmSync(disk, { force: true });
+ fs.mkdirSync(disk);
+ fs.writeFileSync(path.join(disk, 'blocked'), 'x');
+ const preview = await req('/api/chat/clear/preview', { cookie: host });
+ const clear = await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-locked-op' }, cookie: host });
+ assert.equal(clear.r.status, 202);
+ assert.equal(clear.data.cleanupPending, true);
+ assert.equal(clear.data.status, 'partial');
+ const operation = await req('/api/operations/clear-locked-op', { cookie: host });
+ assert.equal(operation.data.status, 'partial');
+ assert.equal((await req(`/files/${attachment.file.id}`, { cookie: device })).r.status, 404);
+ fs.rmSync(disk, { recursive: true, force: true });
+});
+
 test('clear cancels an in-flight upload', async () => {
  const host = await login();
  const device = await pair(host, 'Передача');

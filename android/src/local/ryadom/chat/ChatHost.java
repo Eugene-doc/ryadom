@@ -240,7 +240,7 @@ final class ChatHost implements AutoCloseable {
    JSONObject old=find(state.getJSONArray("messages"),"requestId",requestId);
    if(old!=null){if(!old.optString("deletedAt").isEmpty())throw new MiniHttp.Failure(410,"Сообщение было удалено");if(!old.optString("deviceId").equals(device.getString("id")))throw new MiniHttp.Failure(409,"Повторите отправку");return old;}
    if(file!=null&&find(state.getJSONArray("devices"),"id",device.getString("id"))==null)throw new MiniHttp.Failure(401,"Доступ устройства отозван");
-   JSONObject chat=state.optJSONObject("chat");long revision=(chat==null?0:chat.optLong("revision",0))+1;
+   JSONObject chat=state.optJSONObject("chat");long revision=(chat==null?0:chat.optLong("revision",0));
    if(file!=null)file.put("chatId","legacy").put("state","ready");
    message=new JSONObject().put("seq",state.getLong("seq")+1).put("id",UUID.randomUUID().toString()).put("deviceId",device.getString("id")).put("deviceName",device.getString("name")).put("text",text).put("file",file==null?JSONObject.NULL:file).put("created",now()).put("requestId",requestId).put("chatId","legacy").put("revision",revision);
    if(file!=null)file.put("messageId",message.getString("id"));
@@ -249,7 +249,6 @@ final class ChatHost implements AutoCloseable {
     next.put("seq",created.getLong("seq"));
     next.getJSONArray("messages").put(created);
     if(file!=null)next.getJSONArray("files").put(file);
-    JSONObject nextChat=next.optJSONObject("chat");if(nextChat!=null)nextChat.put("revision",revision);
    });
   }
   broadcast("message",message,false);
@@ -344,7 +343,7 @@ final class ChatHost implements AutoCloseable {
     for(int i=0;i<all.length();i++)if(all.getJSONObject(i).optString("deletedAt").isEmpty())total++;
     for(int i=Math.max(0,all.length()-100);i<all.length();i++)if(all.getJSONObject(i).optString("deletedAt").isEmpty())last.put(all.get(i));
     JSONArray urls=new JSONArray();for(String ip:addresses)urls.put("http://"+ip+":"+port);
-    result=new JSONObject().put("me",new JSONObject().put("id",deviceId).put("name",device.getString("name")).put("host",device.optBoolean("host"))).put("devices",publicDevices()).put("messages",last).put("maxFile",MAX_FILE).put("total",total).put("chat",state.optJSONObject("chat")).put("server",new JSONObject().put("addresses",urls).put("protocol",PROTOCOL).put("direct",true).put("localControls",false).put("tls",true).put("fingerprint",tls.fingerprint));
+    result=new JSONObject().put("me",new JSONObject().put("id",deviceId).put("name",device.getString("name")).put("host",device.optBoolean("host"))).put("devices",publicDevices()).put("messages",last).put("maxFile",MAX_FILE).put("total",total).put("chat",state.optJSONObject("chat")).put("server",new JSONObject().put("addresses",urls).put("version",VERSION).put("protocol",PROTOCOL).put("direct",true).put("localControls",false).put("tls",true).put("fingerprint",tls.fingerprint));
     if(device.optBoolean("host")){
      result.put("pairing",pairing()).put("pendingRequests",pendingList()).put("storage",new JSONObject().put("totalBytes",maxTotal).put("usedBytes",totalBytes()).put("freeBytes",files.getUsableSpace()));
     }

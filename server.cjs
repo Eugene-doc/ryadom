@@ -137,7 +137,7 @@ function addMessage(d, text, file, requestId, announce = true) {
  const id = crypto.randomUUID();
  db.prepare('INSERT INTO messages (id,deviceId,deviceName,text,file,created,requestId,chatId) VALUES (?,?,?,?,?,?,?,?)').run(id, d.id, d.name, text, file ? JSON.stringify(file) : null, now(), requestId, 'legacy');
  const result = message(db.prepare('SELECT * FROM messages WHERE id=?').get(id));
- result.revision = bumpRevision();
+ result.revision = chatRow().revision;
  if (announce) broadcast('message', result); return result;
 }
 function cleanName(value) { return String(value || '').replace(/[\x00-\x1f\x7f/\\]/g, '').trim().slice(0, 180) || 'Файл'; }
@@ -298,7 +298,7 @@ const server = http.createServer(async (req, res) => {
   if (route === '/api/state' && req.method === 'GET') {
    const chat = chatRow();
    const messages = db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL ORDER BY seq DESC LIMIT 100').all().reverse().map(message);
-   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, revision: chat.revision, epoch: chat.epoch }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
+   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, revision: chat.revision, epoch: chat.epoch }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), version: VERSION, protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
    if (d.host) { state.pairing = pairing; state.pendingRequests = pendingList(); state.storage = { totalBytes: MAX_TOTAL_BYTES, usedBytes: totalBytes(), freeBytes: freeDiskBytes() }; }
    return send(res, 200, state);
   }
