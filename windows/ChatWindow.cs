@@ -46,13 +46,19 @@ namespace Ryadom {
   private WebView2 view;
   private readonly Label version = new Label();
   private readonly string downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Рядом");
+  private readonly Action<Exception> failure;
   private string pendingUrl;
-  private bool allowClose;
-  public ChatWindow(string url) {
+  private bool allowClose, failed;
+  public ChatWindow(string url) : this(url, null) { }
+  public ChatWindow(string url, Action<Exception> onFailure) {
+   failure = onFailure;
    WebView2Bootstrap.Prepare();
    try { if (string.IsNullOrEmpty(CoreWebView2Environment.GetAvailableBrowserVersionString())) throw new InvalidOperationException("WebView2 Runtime не установлен"); }
    catch (Exception e) { throw new InvalidOperationException("Для окна Рядом нужен Microsoft Edge WebView2 Runtime. Установите его и повторите запуск.", e); }
    view = new WebView2();
+   string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Ryadom", "webview2-data");
+   Directory.CreateDirectory(profile);
+   view.CreationProperties = new CoreWebView2CreationProperties { UserDataFolder = profile };
    pendingUrl = url;
    Text = "Рядом";
    Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -79,26 +85,36 @@ namespace Ryadom {
   public void CloseForExit() { allowClose = true; Close(); }
   private void Initialize() {
    view.CoreWebView2InitializationCompleted += (s, e) => {
-    if (!e.IsSuccess) { MessageBox.Show("Не удалось запустить WebView2. Установите Microsoft Edge WebView2 Runtime и повторите запуск.\n\n" + e.InitializationException.Message, "Рядом", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+    if (!e.IsSuccess) { Fail(e.InitializationException); return; }
     CoreWebView2 core = view.CoreWebView2;
     core.Settings.AreDefaultContextMenusEnabled = false;
     core.Settings.IsStatusBarEnabled = false;
     core.Settings.AreDevToolsEnabled = false;
     core.Settings.IsZoomControlEnabled = true;
-    core.AddScriptToExecuteOnDocumentCreatedAsync("window.ryadom={appVersion:'" + VersionText().Replace("'", "\\'") + "',openDownloads:function(){window.chrome.webview.postMessage('openDownloads');}};");
     core.WebMessageReceived += (a, b) => { if (b.TryGetWebMessageAsString() == "openDownloads") OpenDownloads(); };
     core.DownloadStarting += (a, b) => {
      string name = Path.GetFileName(b.ResultFilePath);
      if (string.IsNullOrEmpty(name)) name = "file";
      name = name.Replace('/', '_').Replace('\\', '_');
      if (name.Length > 120) name = name.Substring(name.Length - 120);
-     string path = Path.Combine(downloads, DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + name);
+     string path;
+     do { path = Path.Combine(downloads, DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + name); } while (File.Exists(path) || File.Exists(path + ".crdownload"));
      b.ResultFilePath = path; b.Handled = true; lastDownload = path;
     };
-    if (!string.IsNullOrEmpty(pendingUrl)) core.Navigate(pendingUrl);
+    core.AddScriptToExecuteOnDocumentCreatedAsync("window.ryadom={appVersion:'" + VersionText().Replace("'", "\\'") + "',openDownloads:function(){window.chrome.webview.postMessage('openDownloads');}};").ContinueWith(task => {
+     if (task.IsFaulted) { Fail(task.Exception); return; }
+     if (string.IsNullOrEmpty(pendingUrl)) return;
+     try { BeginInvoke(new Action(() => { if (view.CoreWebView2 != null) view.CoreWebView2.Navigate(pendingUrl); })); } catch { }
+    });
    };
    try { view.EnsureCoreWebView2Async(null); }
-   catch (Exception e) { MessageBox.Show("Не удалось запустить WebView2: " + e.Message + "\n\nУстановите Microsoft Edge WebView2 Runtime.", "Рядом", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+   catch (Exception e) { Fail(e); }
+  }
+  private void Fail(Exception e) {
+   if (failed) return; failed = true;
+   try { Hide(); } catch { }
+   if (failure != null) { try { failure(e); } catch { } }
+   else MessageBox.Show("Не удалось запустить WebView2: " + e.Message, "Рядом", MessageBoxButtons.OK, MessageBoxIcon.Warning);
   }
   private static string VersionText() {
    Version value = Assembly.GetExecutingAssembly().GetName().Version;

@@ -97,6 +97,17 @@ async function upload(cookie, name, requestId) {
  return data;
 }
 
+test('clear revision rejects messages added after preview', async () => {
+ const host = await login();
+ const device = await pair(host, 'Новое после preview');
+ const preview = await req('/api/chat/clear/preview', { cookie: host });
+ assert.equal(preview.r.status, 200);
+ await text(device, 'пришло после preview', 'clear-race-1');
+ const clear = await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-race-op' }, cookie: host });
+ assert.equal(clear.r.status, 409);
+ assert.equal((await req('/api/state', { cookie: device })).data.messages.length, 1);
+});
+
 test('author deletes own text and attachment', async () => {
  const host = await login();
  const device = await pair(host, 'Автор');
@@ -175,6 +186,11 @@ test('clear preview and clear remove history and files', async () => {
  assert.equal(op.r.status, 200);
  assert.equal(op.data.status, 'done');
  assert.ok(op.data.freedBytes >= 1);
+ const replay = await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-op-1' }, cookie: host });
+ assert.equal(replay.r.status, 200);
+ assert.equal(replay.data.status, 'done');
+ assert.equal(replay.data.revision, clear.data.revision);
+ assert.equal(replay.data.epoch, clear.data.epoch);
  assert.equal((await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-op-2' }, cookie: host })).r.status, 409);
  assert.equal((await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: state.data.chat.revision, operationId: 'clear-op-3' }, cookie: host })).r.status, 202);
  assert.equal(message.id.length > 0, true);
@@ -206,7 +222,16 @@ test('clear reports a partial cleanup when a file cannot be unlinked', async () 
  const operation = await req('/api/operations/clear-locked-op', { cookie: host });
  assert.equal(operation.data.status, 'partial');
  assert.equal((await req(`/files/${attachment.file.id}`, { cookie: device })).r.status, 404);
+ const repeated = await req(`/api/messages/${attachment.id}`, { method: 'DELETE', cookie: host });
+ assert.equal(repeated.r.status, 200);
+ assert.equal(repeated.data.cleanupPending, true);
+ assert.equal(repeated.data.freedBytes, 0);
  fs.rmSync(disk, { recursive: true, force: true });
+ await stop();
+ await start();
+ const recovered = await req('/api/operations/clear-locked-op', { cookie: host });
+ assert.equal(recovered.r.status, 200, logs);
+ assert.equal(recovered.data.status, 'done', logs);
 });
 
 test('clear cancels an in-flight upload', async () => {

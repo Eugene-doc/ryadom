@@ -35,7 +35,7 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY, name TEXT NOT NULL, mime TEXT NOT NULL, size INTEGER NOT NULL, deviceId TEXT);
  CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, deviceId TEXT NOT NULL, created TEXT NOT NULL, lastSeen TEXT NOT NULL, expires TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, detail TEXT, ip TEXT, created TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, ownerDeviceId TEXT, created TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0);
+ CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, ownerDeviceId TEXT, created TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, deletionRevision INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, type TEXT NOT NULL, chatId TEXT NOT NULL, actorId TEXT, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, result TEXT, error TEXT);`);
 function columnExists(table, column) { try { return db.prepare(`PRAGMA table_info(${table})`).all().some(x => x.name === column); } catch { return true; } }
 if (!columnExists('files', 'deviceId')) { try { db.exec('ALTER TABLE files ADD COLUMN deviceId TEXT'); } catch {} }
@@ -45,7 +45,11 @@ if (!columnExists('messages', 'deletedBy')) { try { db.exec('ALTER TABLE message
 if (!columnExists('files', 'chatId')) { try { db.exec("ALTER TABLE files ADD COLUMN chatId TEXT NOT NULL DEFAULT 'legacy'"); } catch {} }
 if (!columnExists('files', 'messageId')) { try { db.exec('ALTER TABLE files ADD COLUMN messageId TEXT'); } catch {} }
 if (!columnExists('files', 'state')) { try { db.exec("ALTER TABLE files ADD COLUMN state TEXT NOT NULL DEFAULT 'ready'"); } catch {} }
-db.prepare("INSERT OR IGNORE INTO chats (id,type,title,ownerDeviceId,created,revision,epoch) VALUES ('legacy','legacy','Свои устройства',NULL,?,0,0)").run(new Date().toISOString());
+if (!columnExists('chats', 'deletionRevision')) { try { db.exec('ALTER TABLE chats ADD COLUMN deletionRevision INTEGER NOT NULL DEFAULT 0'); } catch {} }
+db.prepare("INSERT OR IGNORE INTO chats (id,type,title,ownerDeviceId,created,revision,deletionRevision,epoch) VALUES ('legacy','legacy','Свои устройства',NULL,?,0,0,0)").run(new Date().toISOString());
+db.exec("UPDATE messages SET chatId='legacy' WHERE chatId IS NULL OR chatId=''");
+db.exec("UPDATE files SET chatId='legacy' WHERE chatId IS NULL OR chatId=''");
+db.exec("UPDATE files SET state='ready' WHERE state IS NULL OR state=''");
 for (const row of db.prepare("SELECT id,file FROM messages WHERE file IS NOT NULL AND deletedAt IS NULL").all()) {
  try { const file = JSON.parse(row.file); if (file && file.id) db.prepare('UPDATE files SET messageId=? WHERE id=?').run(row.id, file.id); } catch {}
 }
@@ -56,9 +60,19 @@ const now = () => new Date().toISOString();
 const iso = ms => new Date(ms).toISOString();
 function chatRow() { return db.prepare('SELECT * FROM chats WHERE id=?').get('legacy'); }
 function bumpRevision() { db.prepare('UPDATE chats SET revision=revision+1 WHERE id=?').run('legacy'); return chatRow().revision; }
+function bumpDeletion() { db.prepare('UPDATE chats SET revision=revision+1,deletionRevision=deletionRevision+1 WHERE id=?').run('legacy'); return chatRow().revision; }
 function operationResponse(row) {
  let result = {}; try { result = JSON.parse(row.result || '{}'); } catch {}
  return { id: row.id, type: row.type, chatId: row.chatId, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt, error: row.error, ...result };
+}
+function reconcileClearOperations() {
+ const pending = db.prepare("SELECT count(*) AS n FROM files WHERE state='deleting'").get().n;
+ if (pending > 0) return;
+ for (const row of db.prepare("SELECT * FROM operations WHERE type='clear' AND status IN ('deleting','partial')").all()) {
+  let result = {}; try { result = JSON.parse(row.result || '{}'); } catch {}
+  result.cleanupPending = false;
+  db.prepare("UPDATE operations SET status='done',updatedAt=?,result=?,error=NULL WHERE id=?").run(now(), JSON.stringify(result), row.id);
+ }
 }
 const address = x => String(x || '').replace(/^::ffff:/, '');
 function safeEqual(a, b) { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
@@ -137,7 +151,7 @@ function addMessage(d, text, file, requestId, announce = true) {
  const id = crypto.randomUUID();
  db.prepare('INSERT INTO messages (id,deviceId,deviceName,text,file,created,requestId,chatId) VALUES (?,?,?,?,?,?,?,?)').run(id, d.id, d.name, text, file ? JSON.stringify(file) : null, now(), requestId, 'legacy');
  const result = message(db.prepare('SELECT * FROM messages WHERE id=?').get(id));
- result.revision = chatRow().revision;
+ result.revision = bumpRevision();
  if (announce) broadcast('message', result); return result;
 }
 function cleanName(value) { return String(value || '').replace(/[\x00-\x1f\x7f/\\]/g, '').trim().slice(0, 180) || 'Файл'; }
@@ -298,7 +312,7 @@ const server = http.createServer(async (req, res) => {
   if (route === '/api/state' && req.method === 'GET') {
    const chat = chatRow();
    const messages = db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL ORDER BY seq DESC LIMIT 100').all().reverse().map(message);
-   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, revision: chat.revision, epoch: chat.epoch }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), version: VERSION, protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
+   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, revision: chat.revision, deletionRevision: chat.deletionRevision, epoch: chat.epoch }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), version: VERSION, protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
    if (d.host) { state.pairing = pairing; state.pendingRequests = pendingList(); state.storage = { totalBytes: MAX_TOTAL_BYTES, usedBytes: totalBytes(), freeBytes: freeDiskBytes() }; }
    return send(res, 200, state);
   }
@@ -322,28 +336,31 @@ const server = http.createServer(async (req, res) => {
    if (!id || id.length > 80) throw error(400, 'Некорректное сообщение');
    const row = db.prepare('SELECT * FROM messages WHERE id=?').get(id);
    if (!row) throw error(404, 'Сообщение не найдено');
-   if (row.deletedAt) return send(res, 200, { ok: true, id, chatId: 'legacy', revision: chatRow().revision, freedBytes: 0, cleanupPending: false });
+   if (row.deletedAt) {
+    const pending = db.prepare("SELECT id FROM files WHERE messageId=? AND state='deleting'").get(id);
+    return send(res, 200, { ok: true, id, chatId: 'legacy', revision: chatRow().revision, deletionRevision: chatRow().deletionRevision, freedBytes: 0, cleanupPending: !!pending });
+   }
    if (row.deviceId !== d.id && !d.host) throw error(403, 'Удалить можно только своё сообщение');
    let file = null;
    try { file = row.file ? JSON.parse(row.file) : null; } catch {}
    const fileRow = file && file.id ? db.prepare('SELECT * FROM files WHERE id=?').get(file.id) : null;
-   const freedBytes = fileRow ? fileRow.size : 0;
+   let freedBytes = 0;
    let revision;
    db.exec('BEGIN');
    try {
     db.prepare('UPDATE messages SET deletedAt=?,deletedBy=?,text=?,file=NULL WHERE id=?').run(now(), d.id, '', id);
     if (fileRow) db.prepare("UPDATE files SET state='deleting' WHERE id=?").run(fileRow.id);
-    revision = bumpRevision();
+    revision = bumpDeletion();
     db.exec('COMMIT');
    } catch (e) { db.exec('ROLLBACK'); throw e; }
    let cleanupPending = false;
    if (fileRow) {
-    try { fs.rmSync(path.join(uploads, fileRow.id), { force: true }); db.prepare('DELETE FROM files WHERE id=?').run(fileRow.id); }
+    try { fs.rmSync(path.join(uploads, fileRow.id), { force: true }); db.prepare('DELETE FROM files WHERE id=?').run(fileRow.id); freedBytes = fileRow.size; }
     catch { cleanupPending = true; }
    }
    logEvent('message_deleted', id, address(peer));
-   broadcast('message_deleted', { id, chatId: 'legacy', revision, freedBytes, deletedBy: d.id, cleanupPending });
-   return send(res, 200, { ok: true, id, chatId: 'legacy', revision, freedBytes, cleanupPending });
+   broadcast('message_deleted', { id, chatId: 'legacy', revision, deletionRevision: chatRow().deletionRevision, freedBytes, deletedBy: d.id, cleanupPending });
+   return send(res, 200, { ok: true, id, chatId: 'legacy', revision, deletionRevision: chatRow().deletionRevision, freedBytes, cleanupPending });
   }
   if (route === '/api/chat/clear/preview' && req.method === 'GET') {
    if (!d.host) throw error(403, 'Очистка доступна на главном устройстве');
@@ -360,8 +377,7 @@ const server = http.createServer(async (req, res) => {
    const operationId = String(body.operationId || '').slice(0, 80);
    if (!operationId) throw error(400, 'Нужен идентификатор операции');
    const existing = db.prepare('SELECT * FROM operations WHERE id=?').get(operationId);
-   if (existing) return send(res, 200, operationResponse(existing));
-   const chat = chatRow();
+   if (existing) return send(res, 200, operationResponse(existing));   const chat = chatRow();
    if (Number(body.revision) !== chat.revision) throw error(409, 'Чат изменился. Обновите данные и повторите');
    const files = db.prepare("SELECT id,size FROM files WHERE chatId='legacy' AND state='ready'").all();
    const activeMessages = db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n;
@@ -371,9 +387,9 @@ const server = http.createServer(async (req, res) => {
    try {
     db.prepare("UPDATE messages SET deletedAt=?,deletedBy=?,text='',file=NULL WHERE deletedAt IS NULL").run(now(), d.id);
     db.prepare("UPDATE files SET state='deleting' WHERE chatId='legacy' AND state='ready'").run();
-    db.prepare('UPDATE chats SET revision=revision+1,epoch=epoch+1 WHERE id=?').run('legacy');
+    db.prepare('UPDATE chats SET revision=revision+1,deletionRevision=deletionRevision+1,epoch=epoch+1 WHERE id=?').run('legacy');
     next = chatRow();
-    db.prepare('INSERT INTO operations (id,type,chatId,actorId,status,createdAt,updatedAt,result,error) VALUES (?,?,?,?,?,?,?,?,?)').run(operationId, 'clear', 'legacy', d.id, 'deleting', now(), now(), JSON.stringify({ messages: activeMessages, files: files.length, bytes }), null);
+    db.prepare('INSERT INTO operations (id,type,chatId,actorId,status,createdAt,updatedAt,result,error) VALUES (?,?,?,?,?,?,?,?,?)').run(operationId, 'clear', 'legacy', d.id, 'deleting', now(), now(), JSON.stringify({ revision: next.revision, epoch: next.epoch, messages: activeMessages, files: files.length, bytes }), null);
     db.exec('COMMIT');
    } catch (e) { db.exec('ROLLBACK'); throw e; }
    for (const meta of uploadMeta.values()) if (meta.chatId === 'legacy') { try { meta.req.destroy(); } catch {} }
@@ -383,10 +399,10 @@ const server = http.createServer(async (req, res) => {
     catch { cleanupPending = true; }
    }
    const status = cleanupPending ? 'partial' : 'done';
-   const result = { messages: activeMessages, files: files.length, bytes, freedBytes, cleanupPending };
+   const result = { revision: next.revision, epoch: next.epoch, messages: activeMessages, files: files.length, bytes, freedBytes, cleanupPending };
    db.prepare('UPDATE operations SET status=?,updatedAt=?,result=?,error=? WHERE id=?').run(status, now(), JSON.stringify(result), cleanupPending ? 'Не все файлы удалены' : null, operationId);
    logEvent('chat_cleared', operationId, address(peer));
-   broadcast('chat_cleared', { chatId: 'legacy', revision: next.revision, epoch: next.epoch, operationId, freedBytes, cleanupPending });
+   broadcast('chat_cleared', { chatId: 'legacy', revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, operationId, freedBytes, cleanupPending });
    return send(res, 202, { operationId, status, revision: next.revision, epoch: next.epoch, freedBytes, cleanupPending });
   }
   if (route.startsWith('/api/operations/') && req.method === 'GET') {
@@ -400,7 +416,7 @@ const server = http.createServer(async (req, res) => {
    if (!Number.isSafeInteger(size) || size < 1 || size > MAX_FILE) throw error(413, 'Файл должен быть от 1 байта до 512 МБ');
    const requestId = String(url.searchParams.get('requestId') || crypto.randomUUID()).slice(0, 80);
    const old = db.prepare('SELECT * FROM messages WHERE requestId=? AND deviceId=?').get(requestId, d.id);
-   if (old) { req.resume(); return send(res, 200, message(old)); }
+   if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); req.resume(); return send(res, 200, message(old)); }
    if (uploadJobs.has(requestId) || (activeUploads.get(d.id) || 0) >= 2) throw error(429, 'Дождитесь завершения текущей передачи');
    const epoch = chatRow().epoch;
    const release = reserveBytes(d.id, size);
@@ -551,6 +567,7 @@ server.listen(PORT, process.env.RYADOM_LAN_STATE ? '127.0.0.1' : '0.0.0.0', () =
  for (const row of db.prepare("SELECT id FROM files WHERE state='deleting'").all()) {
   try { fs.rmSync(path.join(uploads, row.id), { force: true }); db.prepare('DELETE FROM files WHERE id=?').run(row.id); } catch {}
  }
+ reconcileClearOperations();
  process.stdout.write('\x1b]0;Рядом — личный чат\x07');
  console.log(`\n  РЯДОМ · личный чат\n\n  Чат работает. Это окно можно свернуть.\n  Закрытие окна выключит чат для всех устройств.\n\n  Адреса для телефона:\n  ${lanAddresses().map(ip => `http://${ip}:${PORT}`).join('\n  ') || 'Подключитесь к Wi-Fi и перезапустите приложение.'}\n\n  Данные: ${DATA}\n`);
  openWindow();

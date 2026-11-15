@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const icon = name => { const s=document.createElementNS('http://www.w3.org/2000/svg','svg');const u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href',`#i-${name}`);s.append(u);return s; };
 const el = (tag,cls,text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
+let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, stateGeneration=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
 const uuid=()=>{if(crypto.randomUUID)return crypto.randomUUID();const b=crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;return [...b].map((v,i)=>([4,6,8,10].includes(i)?'-':'')+v.toString(16).padStart(2,'0')).join('');};
 const sizeText=n=>n<1024?`${n} Б`:n<1024*1024?`${(n/1024).toFixed(0)} КБ`:`${(n/1024/1024).toFixed(n<10*1024*1024?1:0)} МБ`;
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
@@ -13,30 +13,33 @@ async function api(route,method='GET',body){
 async function copy(text){try{if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(text);else{const input=el('textarea');input.value=text;input.className='copy-helper';(document.querySelector('dialog[open]')||document.body).append(input);input.select();const ok=document.execCommand('copy');input.remove();if(!ok)throw new Error();}toast('Скопировано');}catch{toast('Не удалось скопировать. Выделите текст вручную.');}}
 function showJoin(){events?.close();events=null;me=null;chat=null;messages.clear();queue=[];pendingRequests=[];fingerprint='';storage=null;$('join-pending').hidden=true;$('join-error').textContent='';$('app').hidden=true;$('join-screen').hidden=false;$('device-name').value=/Android/i.test(navigator.userAgent)?'Мой Android':/iPhone|iPad/i.test(navigator.userAgent)?'Мой iPhone':'Мой ноутбук';if($('settings-dialog').open)$('settings-dialog').close();}
 function showUpdate(){events?.close();events=null;me=null;$('app').hidden=true;$('join-screen').hidden=false;$('join-error').textContent='Версия главного устройства несовместима. Обновите Рядом на всех устройствах.';}
-function applyState(data){
+function applyState(data,generation=stateGeneration){
+ if(generation!==stateGeneration)return;
  if(data.server&&data.server.protocol!==undefined&&data.server.protocol!==3){showUpdate();return;}
  me=data.me;devices=data.devices;pairing=data.pairing;addresses=data.server.addresses;pendingRequests=data.pendingRequests||[];fingerprint=data.server.fingerprint||'';tlsEnabled=!!data.server.tls;storage=data.storage||null;
- const incoming=data.chat||{id:'legacy',revision:0,epoch:0};const reset=chat&&(chat.id!==incoming.id||chat.revision!==incoming.revision||chat.epoch!==incoming.epoch);chat=incoming;
+ const incoming=data.chat||{id:'legacy',revision:0,deletionRevision:0,epoch:0};
+ if(chat&&(incoming.revision<chat.revision||(incoming.deletionRevision??0)<(chat.deletionRevision??0)))return;
+ const reset=chat&&(chat.id!==incoming.id||(chat.deletionRevision??0)!==(incoming.deletionRevision??0)||chat.epoch!==incoming.epoch);chat=incoming;
  if(reset){messages.clear();canLoadOlder=false;}
  $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;
  $('app-version').textContent=`Приложение ${(typeof window.ryadom?.appVersion==='function'?window.ryadom.appVersion():window.ryadom?.appVersion)||'—'} · главное ${data.server.version||'—'}`;
  renderDevices();renderMessages();renderPending();updateButtons();
 }
 async function sync(){
- if(syncing||!me)return;syncing=true;
+ if(syncing||!me)return;syncing=true;const generation=stateGeneration;
  try{
   const last=Math.max(0,...[...messages.values()].map(m=>m.seq));
-  if(last){let cursor=last;while(true){const page=await api(`/api/messages?after=${cursor}`);page.forEach(m=>messages.set(m.id,m));if(page.length<100)break;cursor=page[page.length-1].seq;}}
-  const data=await api('/api/state');applyState(data);
+  if(last){let cursor=last;while(true){const page=await api(`/api/messages?after=${cursor}`);if(generation!==stateGeneration)return;page.forEach(m=>messages.set(m.id,m));if(page.length<100)break;cursor=page[page.length-1].seq;}}
+  const data=await api('/api/state');if(generation!==stateGeneration)return;applyState(data,generation);
  }catch(e){if(e.status===401){showJoin();toast('Подключите устройство заново');}}finally{syncing=false;}
 }
 function connectEvents(){
  events?.close();events=new EventSource('/api/events');
  events.onopen=()=>{online=true;renderConnection();sync();};
  events.onerror=()=>{online=false;renderConnection();sync();};
- events.addEventListener('message',e=>{const m=JSON.parse(e.data);messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
- events.addEventListener('message_deleted',e=>{const d=JSON.parse(e.data);const old=messages.get(d.id);messages.delete(d.id);if(chat&&typeof d.revision==='number')chat.revision=d.revision;if(old?.file&&$('full-image').src.includes(old.file.id)&&$('image-dialog').open)$('image-dialog').close();const node=$('messages').querySelector(`[data-key="${CSS.escape(d.id)}"]`);node?.remove();renderMessages();});
- events.addEventListener('chat_cleared',e=>{const d=JSON.parse(e.data);messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:d.revision??chat?.revision??0,epoch:d.epoch??chat?.epoch??0};if($('image-dialog').open)$('image-dialog').close();renderMessages(true);toast(d.cleanupPending?'Чат очищен, но некоторые файлы остались на диске. Повторите очистку позже.':'Чат и файлы очищены');});
+ events.addEventListener('message',e=>{const m=JSON.parse(e.data);stateGeneration++;messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
+ events.addEventListener('message_deleted',e=>{const d=JSON.parse(e.data);stateGeneration++;const old=messages.get(d.id);messages.delete(d.id);if(chat){chat.revision=Math.max(chat.revision??0,d.revision??0);chat.deletionRevision=Math.max(chat.deletionRevision??0,d.deletionRevision??0);}if(old?.file&&$('full-image').src.includes(old.file.id)&&$('image-dialog').open)$('image-dialog').close();const node=$('messages').querySelector(`[data-key="${CSS.escape(d.id)}"]`);node?.remove();renderMessages();});
+ events.addEventListener('chat_cleared',e=>{const d=JSON.parse(e.data);stateGeneration++;messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:Math.max(chat?.revision??0,d.revision??0),deletionRevision:Math.max(chat?.deletionRevision??0,d.deletionRevision??0),epoch:d.epoch??chat?.epoch??0};if($('image-dialog').open)$('image-dialog').close();renderMessages(true);toast(d.cleanupPending?'Чат очищен, но некоторые файлы остались на диске. Повторите очистку позже.':'Чат и файлы очищены');});
  events.addEventListener('devices',e=>{devices=JSON.parse(e.data);renderDevices();});
  events.addEventListener('pair_request',e=>{if(me?.host){sync();toast('Новый запрос на подключение');if(!$('settings-dialog').open)openSettings();}});
  events.addEventListener('pairing',()=>{if(me?.host)sync();});
@@ -93,14 +96,14 @@ function openDeleteDialog(message){
 }
 async function deleteMessage(){
  const message=deleteTarget;if(!message)return;
- const button=$('delete-confirm');button.disabled=true;
+ const button=$('delete-confirm');button.disabled=true;let done=false;
  try{
   const result=await api(`/api/messages/${encodeURIComponent(message.id)}`,'DELETE');
-  messages.delete(message.id);if(chat&&typeof result.revision==='number')chat.revision=result.revision;
+  messages.delete(message.id);if(chat){chat.revision=Math.max(chat.revision??0,result.revision??0);chat.deletionRevision=Math.max(chat.deletionRevision??0,result.deletionRevision??0);}
   if(message.file&&$('full-image').src.includes(message.file.id)&&$('image-dialog').open)$('image-dialog').close();
-  $('delete-dialog').close();renderMessages();toast(result.freedBytes?`Удалено, освобождено ${sizeText(result.freedBytes)}`:'Сообщение удалено');
+  $('delete-dialog').close();renderMessages();toast(result.freedBytes?`Удалено, освобождено ${sizeText(result.freedBytes)}`:'Сообщение удалено');done=true;
  }catch(e){toast(e.message);}
- finally{button.disabled=false;deleteTarget=null;}
+ finally{button.disabled=false;if(done)deleteTarget=null;}
 }
 async function openClearDialog(){
  if(!me?.host)return;
@@ -114,7 +117,7 @@ async function clearChat(){
  const button=$('clear-confirm');button.disabled=true;
  try{
   const result=await api('/api/chat/clear','POST',{confirm:true,revision:clearRevision,operationId:uuid()});
-  messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:result.revision,epoch:result.epoch};
+  messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:result.revision,deletionRevision:result.deletionRevision??chat?.deletionRevision??0,epoch:result.epoch};
   if($('image-dialog').open)$('image-dialog').close();
   $('clear-dialog').close();renderMessages(true);
   toast(result.cleanupPending?`История очищена, но не все файлы удалены (${sizeText(result.freedBytes)}).`:`Чат и файлы очищены. Освобождено ${sizeText(result.freedBytes)}.`);
@@ -138,7 +141,7 @@ $('pair-code').oninput=()=>{const s=$('pair-code').value.replace(/\D/g,'').slice
 function setFilter(next){filter=next;$('tab-all').classList.toggle('active',next==='all');$('tab-media').classList.toggle('active',next==='media');$('tab-all').setAttribute('aria-pressed',next==='all');$('tab-media').setAttribute('aria-pressed',next==='media');renderMessages(true);}
 $('tab-all').onclick=()=>setFilter('all');$('all-room').onclick=()=>setFilter('all');$('tab-media').onclick=()=>setFilter('media');
 $('search-toggle').onclick=()=>{$('search-bar').hidden=!$('search-bar').hidden;if(!$('search-bar').hidden)$('search').focus();else{$('search').value='';renderMessages();}};$('search-close').onclick=()=>{$('search-bar').hidden=true;$('search').value='';renderMessages();};$('search').oninput=()=>renderMessages();
-$('load-older').onclick=async()=>{const a=$('scroll-area');const before=Math.min(...[...messages.values()].map(m=>m.seq));const previous=a.scrollHeight;$('load-older').disabled=true;try{const page=await api(`/api/messages?before=${before}`);page.forEach(m=>messages.set(m.id,m));canLoadOlder=page.length===100;renderMessages();a.scrollTop+=a.scrollHeight-previous;}catch(e){toast(e.message);}finally{$('load-older').disabled=false;}};
+$('load-older').onclick=async()=>{const a=$('scroll-area');const before=Math.min(...[...messages.values()].map(m=>m.seq));const previous=a.scrollHeight;const generation=stateGeneration;$('load-older').disabled=true;try{const page=await api(`/api/messages?before=${before}`);if(generation!==stateGeneration)return;page.forEach(m=>messages.set(m.id,m));canLoadOlder=page.length===100;renderMessages();a.scrollTop+=a.scrollHeight-previous;}catch(e){toast(e.message);}finally{$('load-older').disabled=false;}};
 function eventName(type){return {host_login:'вход главного',pair_request:'запрос на подключение',pair_approved:'подключение подтверждено',pair_rejected:'подключение отклонено',device_revoked:'устройство отозвано',logout:'выход',logout_all:'выход на всех'}[type]||type;}
 function renderPending(){const section=$('pending-section');if(!section)return;const host=!!me?.host;section.hidden=!host||!pendingRequests.length;if(section.hidden)return;const list=$('pending-list');list.replaceChildren();for(const p of pendingRequests){const row=el('div','settings-device');const info=el('div','device-detail');info.append(el('strong','',p.name),el('small','',`${p.ip} · ${new Date(p.created).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}`));row.append(info);const ok=el('button','button secondary','Подтвердить');ok.type='button';ok.onclick=async()=>{ok.disabled=true;try{await api('/api/host/pair/approve','POST',{requestId:p.requestId});toast('Устройство подключено');await sync();}catch(e){toast(e.message);ok.disabled=false;}};const no=el('button','text-button danger','Отклонить');no.type='button';no.onclick=async()=>{try{await api('/api/host/pair/reject','POST',{requestId:p.requestId});await sync();}catch(e){toast(e.message);}};row.append(ok,no);list.append(row);}}
 async function renderHostSecurity(){if(!me)return;const host=!!me.host;$('host-security').hidden=!host;if(!host)return;$('tls-fingerprint').textContent=fingerprint||'ещё не сформирован';$('storage-info').textContent=storage?`Занято ${sizeText(storage.usedBytes)} из ${sizeText(storage.totalBytes)}`:' ';try{const data=await api('/api/host/events');const box=$('host-events');box.replaceChildren();for(const ev of data.events.slice(0,12)){box.append(el('div','field-hint',`${new Date(ev.created).toLocaleString('ru-RU')} · ${eventName(ev.type)}${ev.detail?' · '+ev.detail:''}`));}}catch{}try{const p=await api('/api/chat/clear/preview');$('chat-stats').textContent=`${p.activeMessages} сообщений · ${p.activeFiles} файлов · ${sizeText(p.bytes)}`;}catch{$('chat-stats').textContent='Не удалось получить размер истории';}}

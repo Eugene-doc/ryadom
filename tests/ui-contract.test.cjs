@@ -16,6 +16,8 @@ test('0.3.0 UI exposes deletion, clear, downloads and version controls', () => {
  assert.match(js, /\/api\/chat\/clear'/);
  assert.match(js, /message_deleted/);
  assert.match(js, /chat_cleared/);
+ assert.match(js, /stateGeneration/);
+ assert.match(js, /deletionRevision/);
  assert.match(js, /openDownloads/);
  assert.match(js, /data\.server\.protocol!==3/);
 });
