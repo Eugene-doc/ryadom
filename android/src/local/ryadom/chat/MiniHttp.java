@@ -93,6 +93,7 @@ final class MiniHttp implements AutoCloseable {
    for(String address:secure){if(context==null)throw new IOException("TLS context is required");addListener(bind(address,port,context));}
    if(listeners.isEmpty())throw new IOException("No listeners");
   }catch(IOException e){close();throw e;}
+  catch(RuntimeException e){close();throw e;}
  }
  private ServerSocket bind(String address,int port,SSLContext context) throws IOException {
   ServerSocket listener=context==null?new ServerSocket():(ServerSocket)context.getServerSocketFactory().createServerSocket();
@@ -109,10 +110,16 @@ final class MiniHttp implements AutoCloseable {
  }
  int port(){return listeners.get(0).getLocalPort();}
  private void accept(ServerSocket listener){
+  int failures=0;
   while(!closed){
    Socket socket;
-   try{socket=listener.accept();}
-   catch(Exception e){if(closed)return;continue;}
+   try{socket=listener.accept();failures=0;}
+   catch(Exception e){
+    if(closed)return;
+    failures=Math.min(failures+1,20);
+    try{Thread.sleep(200L*failures);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();return;}
+    continue;
+   }
    try{socket.setTcpNoDelay(true);socket.setSoTimeout(HEADER_TIMEOUT_MS);}
    catch(Exception e){try{socket.close();}catch(Exception ignored){}continue;}
    if(!admit(socket)){try{socket.close();}catch(Exception ignored){}continue;}

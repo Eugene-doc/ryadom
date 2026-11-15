@@ -28,8 +28,8 @@ final class Discovery implements AutoCloseable {
    try{socket.receive(packet);failures=0;}
    catch(Exception e){
     if(closed)return;
-    if(++failures>=10)return;
-    try{Thread.sleep(200);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();return;}
+    failures=Math.min(failures+1,20);
+    try{Thread.sleep(200L*failures);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();return;}
     continue;
    }
    try{handle(packet,name);}catch(Exception ignored){}
@@ -48,7 +48,7 @@ final class Discovery implements AutoCloseable {
  }
  /** Each interface is independent: a VPN/multicast failure must not discard replies from another LAN. */
  static List<Found> find(List<String> ips,List<Integer> prefixes,Binder binder) throws Exception {
-  Map<String,Found> found=new LinkedHashMap<>();String lastError=null;
+  Map<String,Found> found=new LinkedHashMap<>();String lastError=null;boolean anySent=false;
   for(int i=0;i<ips.size();i++){
    String ip=ips.get(i);int prefix=prefixes.get(i);
    try{
@@ -60,9 +60,9 @@ final class Discovery implements AutoCloseable {
      String nonce=UUID.randomUUID().toString().replace("-","");
      byte[] request=("RYADOM_FIND_V1\t"+nonce).getBytes(StandardCharsets.UTF_8);
      boolean sent=false;
-     try{socket.send(new DatagramPacket(request,request.length,InetAddress.getByAddress(broadcast),PORT));sent=true;}
+     try{socket.send(new DatagramPacket(request,request.length,InetAddress.getByAddress(broadcast),PORT));sent=true;anySent=true;}
      catch(IOException|SecurityException e){lastError=message(e);}
-     try{socket.send(new DatagramPacket(request,request.length,InetAddress.getByName("239.255.42.80"),PORT));sent=true;}
+     try{socket.send(new DatagramPacket(request,request.length,InetAddress.getByName("239.255.42.80"),PORT));sent=true;anySent=true;}
      catch(IOException|SecurityException e){if(lastError==null)lastError=message(e);}
      if(!sent){if(lastError==null)lastError="Не удалось отправить поиск через локальную сеть.";continue;}
      long until=System.currentTimeMillis()+2000;
@@ -76,7 +76,7 @@ final class Discovery implements AutoCloseable {
     }
    }catch(Exception e){lastError=message(e);}
   }
-  if(found.isEmpty()&&lastError!=null)throw new IOException(lastError);
+  if(found.isEmpty()&&!anySent&&lastError!=null)throw new IOException(lastError);
   return new ArrayList<>(found.values());
  }
  private static void parse(DatagramPacket reply,String nonce,byte[] address,int prefix,Map<String,Found> found) throws Exception {
