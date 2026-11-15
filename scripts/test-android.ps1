@@ -24,11 +24,12 @@ function Invoke-JvmTest([string]$Main,[hashtable]$Variables=@{}){
 }
 Invoke-JvmTest 'local.ryadom.chat.AddressTest'
 Invoke-JvmTest 'local.ryadom.chat.NetworkFallbackTest'
+Invoke-JvmTest 'local.ryadom.chat.FunctionalTest'
 Invoke-JvmTest 'local.ryadom.chat.TlsTest'
 Invoke-JvmTest 'local.ryadom.chat.SessionSecurityTest'
 Invoke-JvmTest 'local.ryadom.chat.TimeoutTest' @{RYADOM_HTTP_HEADER_TIMEOUT_MS='800';RYADOM_HTTP_BODY_TIMEOUT_MS='600';RYADOM_HTTP_BODY_TOTAL_TIMEOUT_MS='1200'}
 Invoke-JvmTest 'local.ryadom.chat.QuotaTest' @{RYADOM_MAX_TOTAL_MB='1';RYADOM_MAX_DEVICE_MB='1';RYADOM_MIN_FREE_MB='0'}
 $env:RYADOM_TEST_JAVA="$JdkPath\bin\java.exe"
 $env:RYADOM_TEST_CLASSPATH=$Classpath
-try { & node --test "$ProjectRoot\tests\server.test.cjs" "$ProjectRoot\tests\security.test.cjs" "$ProjectRoot\tests\proxy.test.cjs"; if($LASTEXITCODE -ne 0){throw 'Android host / direct proxy integration tests failed'} }
+try { & node --test "$ProjectRoot\tests\server.test.cjs" "$ProjectRoot\tests\security.test.cjs" "$ProjectRoot\tests\proxy.test.cjs" "$ProjectRoot\tests\functional.test.cjs"; if($LASTEXITCODE -ne 0){throw 'Android host / direct proxy integration tests failed'} }
 finally { Remove-Item Env:\RYADOM_TEST_JAVA,Env:\RYADOM_TEST_CLASSPATH }

@@ -30,6 +30,8 @@ final class ChatHost implements AutoCloseable {
  private final Map<String,long[]> attempts=new HashMap<>();
  private final Set<String> uploadIds=new HashSet<>();
  private final Map<String,Integer> uploads=new HashMap<>();
+ private final Map<String,MiniHttp.Request> uploadRequests=new HashMap<>();
+ private final Map<String,Long> uploadEpochs=new HashMap<>();
  private final Map<String,Long> reserved=new HashMap<>();private long reservedTotal;
  private final Map<String,List<Long>> rate=new HashMap<>();
  private final Map<String,Long> hostTokens=new HashMap<>();
@@ -59,6 +61,7 @@ final class ChatHost implements AutoCloseable {
   if(!state.has("files"))state.put("files",new JSONArray());
   if(!state.has("sessions"))state.put("sessions",new JSONArray());
   if(!state.has("events"))state.put("events",new JSONArray());
+  if(!state.has("operations"))state.put("operations",new JSONArray());
   if(!state.has("seq"))state.put("seq",0);
   if(fresh){
    state.put("schema",3);
@@ -131,6 +134,7 @@ final class ChatHost implements AutoCloseable {
      if(file.optString("messageId").isEmpty()&&messageFiles.containsKey(file.optString("id")))file.put("messageId",messageFiles.get(file.optString("id")));
      if(file.optString("state").isEmpty())file.put("state","ready");
     }
+    if(!next.has("operations"))next.put("operations",new JSONArray());
     next.put("schema",3);
    });
   }
@@ -234,14 +238,27 @@ final class ChatHost implements AutoCloseable {
   final JSONObject message;
   synchronized(this){
    JSONObject old=find(state.getJSONArray("messages"),"requestId",requestId);
-   if(old!=null){if(!old.optString("deviceId").equals(device.getString("id")))throw new MiniHttp.Failure(409,"Повторите отправку");return old;}
+   if(old!=null){if(!old.optString("deletedAt").isEmpty())throw new MiniHttp.Failure(410,"Сообщение было удалено");if(!old.optString("deviceId").equals(device.getString("id")))throw new MiniHttp.Failure(409,"Повторите отправку");return old;}
    if(file!=null&&find(state.getJSONArray("devices"),"id",device.getString("id"))==null)throw new MiniHttp.Failure(401,"Доступ устройства отозван");
-   message=new JSONObject().put("seq",state.getLong("seq")+1).put("id",UUID.randomUUID().toString()).put("deviceId",device.getString("id")).put("deviceName",device.getString("name")).put("text",text).put("file",file==null?JSONObject.NULL:file).put("created",now()).put("requestId",requestId);
+   JSONObject chat=state.optJSONObject("chat");long revision=(chat==null?0:chat.optLong("revision",0))+1;
+   if(file!=null)file.put("chatId","legacy").put("state","ready");
+   message=new JSONObject().put("seq",state.getLong("seq")+1).put("id",UUID.randomUUID().toString()).put("deviceId",device.getString("id")).put("deviceName",device.getString("name")).put("text",text).put("file",file==null?JSONObject.NULL:file).put("created",now()).put("requestId",requestId).put("chatId","legacy").put("revision",revision);
+   if(file!=null)file.put("messageId",message.getString("id"));
    final JSONObject created=message;
-   change(next->{next.put("seq",created.getLong("seq"));next.getJSONArray("messages").put(created);if(file!=null)next.getJSONArray("files").put(file);});
+   change(next->{
+    next.put("seq",created.getLong("seq"));
+    next.getJSONArray("messages").put(created);
+    if(file!=null)next.getJSONArray("files").put(file);
+    JSONObject nextChat=next.optJSONObject("chat");if(nextChat!=null)nextChat.put("revision",revision);
+   });
   }
   broadcast("message",message,false);
   return message;
+ }
+ private static JSONObject operationResponse(JSONObject operation) throws Exception {
+  JSONObject response=new JSONObject(operation.toString());JSONObject result=operation.optJSONObject("result");
+  if(result!=null){Iterator<String> keys=result.keys();while(keys.hasNext()){String key=keys.next();response.put(key,result.get(key));}}
+  return response;
  }
  private void handle(MiniHttp.Request request) throws Exception {
   String remote=request.socket.getInetAddress().getHostAddress();
@@ -323,10 +340,11 @@ final class ChatHost implements AutoCloseable {
   if(route.equals("/api/state")&&request.method.equals("GET")){
    JSONObject result;
    synchronized(this){
-    JSONArray all=state.getJSONArray("messages"),last=new JSONArray();
-    for(int i=Math.max(0,all.length()-100);i<all.length();i++)last.put(all.get(i));
+    JSONArray all=state.getJSONArray("messages"),last=new JSONArray();int total=0;
+    for(int i=0;i<all.length();i++)if(all.getJSONObject(i).optString("deletedAt").isEmpty())total++;
+    for(int i=Math.max(0,all.length()-100);i<all.length();i++)if(all.getJSONObject(i).optString("deletedAt").isEmpty())last.put(all.get(i));
     JSONArray urls=new JSONArray();for(String ip:addresses)urls.put("http://"+ip+":"+port);
-    result=new JSONObject().put("me",new JSONObject().put("id",deviceId).put("name",device.getString("name")).put("host",device.optBoolean("host"))).put("devices",publicDevices()).put("messages",last).put("maxFile",MAX_FILE).put("total",all.length()).put("chat",state.optJSONObject("chat")).put("server",new JSONObject().put("addresses",urls).put("protocol",PROTOCOL).put("direct",true).put("localControls",false).put("tls",true).put("fingerprint",tls.fingerprint));
+    result=new JSONObject().put("me",new JSONObject().put("id",deviceId).put("name",device.getString("name")).put("host",device.optBoolean("host"))).put("devices",publicDevices()).put("messages",last).put("maxFile",MAX_FILE).put("total",total).put("chat",state.optJSONObject("chat")).put("server",new JSONObject().put("addresses",urls).put("protocol",PROTOCOL).put("direct",true).put("localControls",false).put("tls",true).put("fingerprint",tls.fingerprint));
     if(device.optBoolean("host")){
      result.put("pairing",pairing()).put("pendingRequests",pendingList()).put("storage",new JSONObject().put("totalBytes",maxTotal).put("usedBytes",totalBytes()).put("freeBytes",files.getUsableSpace()));
     }
@@ -338,7 +356,7 @@ final class ChatHost implements AutoCloseable {
    try{cursor=Long.parseLong(request.parameter(after?"after":"before"));}catch(Exception e){cursor=after?0:Long.MAX_VALUE;}
    synchronized(this){
     JSONArray all=state.getJSONArray("messages");List<JSONObject> selected=new ArrayList<>();
-    for(int i=0;i<all.length();i++){JSONObject message=all.getJSONObject(i);if(after?message.getLong("seq")>cursor:message.getLong("seq")<cursor)selected.add(message);}
+    for(int i=0;i<all.length();i++){JSONObject message=all.getJSONObject(i);if(!message.optString("deletedAt").isEmpty())continue;if(after?message.getLong("seq")>cursor:message.getLong("seq")<cursor)selected.add(message);}
     int start=after?0:Math.max(0,selected.size()-100);
     for(int i=start;i<Math.min(selected.size(),start+100);i++)result.put(selected.get(i));
    }
@@ -350,6 +368,85 @@ final class ChatHost implements AutoCloseable {
    if(text.isEmpty()||text.length()>12000)throw new MiniHttp.Failure(400,"Сообщение должно содержать от 1 до 12 000 символов");
    String requestId=body.optString("requestId","");if(requestId.isEmpty())requestId=UUID.randomUUID().toString();
    request.json(201,addMessage(device,text,null,requestId.substring(0,Math.min(80,requestId.length()))).toString());return;
+  }
+  if(route.startsWith("/api/messages/")&&request.method.equals("DELETE")){
+   String id=route.substring("/api/messages/".length());
+   JSONObject row;JSONObject fileRow=null;
+   synchronized(this){
+    row=find(state.getJSONArray("messages"),"id",id);
+    if(row!=null){JSONObject file=row.optJSONObject("file");if(file!=null)fileRow=find(state.getJSONArray("files"),"id",file.optString("id"));}
+   }
+   if(row==null)throw new MiniHttp.Failure(404,"Сообщение не найдено");
+   if(!row.optString("deletedAt").isEmpty()){JSONObject chat=state.getJSONObject("chat");request.json(200,new JSONObject().put("ok",true).put("id",id).put("chatId","legacy").put("revision",chat.optLong("revision",0)).put("freedBytes",0).put("cleanupPending",false).toString());return;}
+   if(!row.optString("deviceId").equals(deviceId)&&!device.optBoolean("host"))throw new MiniHttp.Failure(403,"Удалить можно только своё сообщение");
+   long freedBytes=fileRow==null?0:fileRow.optLong("size",0);
+   final JSONObject selectedFile=fileRow;final long[] revision=new long[1];
+   synchronized(this){
+    change(next->{
+     JSONObject current=find(next.getJSONArray("messages"),"id",id);
+     current.put("deletedAt",now()).put("deletedBy",deviceId).put("text","").put("file",JSONObject.NULL);
+     if(selectedFile!=null){JSONObject file=find(next.getJSONArray("files"),"id",selectedFile.optString("id"));if(file!=null)file.put("state","deleting");}
+     JSONObject chat=next.getJSONObject("chat");chat.put("revision",chat.optLong("revision",0)+1);revision[0]=chat.optLong("revision");
+    });
+   }
+   boolean cleanupPending=false;
+   if(selectedFile!=null){
+    File disk=new File(files,selectedFile.getString("id"));
+    try{if(disk.exists()&&!disk.delete())throw new IOException("Не удалось удалить файл");synchronized(this){change(next->remove(next.getJSONArray("files"),"id",selectedFile.getString("id")));}}
+    catch(Exception e){cleanupPending=true;}
+   }
+   logEvent("message_deleted",id,remote);
+   broadcast("message_deleted",new JSONObject().put("id",id).put("chatId","legacy").put("revision",revision[0]).put("freedBytes",freedBytes).put("deletedBy",deviceId).put("cleanupPending",cleanupPending),false);
+   request.json(200,new JSONObject().put("ok",true).put("id",id).put("chatId","legacy").put("revision",revision[0]).put("freedBytes",freedBytes).put("cleanupPending",cleanupPending).toString());return;
+  }
+  if(route.equals("/api/chat/clear/preview")&&request.method.equals("GET")){
+   if(!device.optBoolean("host"))throw new MiniHttp.Failure(403,"Очистка доступна на главном устройстве");
+   JSONObject result;
+   synchronized(this){
+    JSONArray all=state.getJSONArray("messages");int active=0;for(int i=0;i<all.length();i++)if(all.getJSONObject(i).optString("deletedAt").isEmpty())active++;
+    long bytes=0;int activeFiles=0;JSONArray filesState=state.getJSONArray("files");for(int i=0;i<filesState.length();i++){JSONObject file=filesState.getJSONObject(i);if("ready".equals(file.optString("state"))){activeFiles++;bytes+=file.optLong("size",0);}}
+    int temp=0;File[] local=files.listFiles();if(local!=null)for(File file:local)if(file.getName().endsWith(".part"))temp++;
+    JSONObject chat=state.getJSONObject("chat");
+    result=new JSONObject().put("chatId","legacy").put("revision",chat.optLong("revision",0)).put("epoch",chat.optLong("epoch",0)).put("activeMessages",active).put("activeFiles",activeFiles).put("bytes",bytes).put("tempFiles",temp);
+   }
+   request.json(200,result.toString());return;
+  }
+  if(route.equals("/api/chat/clear")&&request.method.equals("POST")){
+   if(!device.optBoolean("host"))throw new MiniHttp.Failure(403,"Очистка доступна на главном устройстве");
+   JSONObject body=body(request);if(!body.optBoolean("confirm",false))throw new MiniHttp.Failure(400,"Подтвердите очистку");
+   String rawOperation=body.optString("operationId","");if(rawOperation.isEmpty())throw new MiniHttp.Failure(400,"Нужен идентификатор операции");final String operationId=rawOperation.substring(0,Math.min(80,rawOperation.length()));
+   JSONObject existing;JSONObject chat;
+   synchronized(this){existing=find(state.getJSONArray("operations"),"id",operationId);chat=state.getJSONObject("chat");}
+   if(existing!=null){request.json(200,operationResponse(existing).toString());return;}
+   if(body.optLong("revision",-1)!=chat.optLong("revision",0))throw new MiniHttp.Failure(409,"Чат изменился. Обновите данные и повторите");
+   final List<String> fileIds=new ArrayList<>();final List<Long> fileSizes=new ArrayList<>();final long[] revision=new long[1],epoch=new long[1];final int[] active=new int[1];
+   synchronized(this){
+    JSONArray all=state.getJSONArray("messages");for(int i=0;i<all.length();i++)if(all.getJSONObject(i).optString("deletedAt").isEmpty())active[0]++;
+    JSONArray filesState=state.getJSONArray("files");for(int i=0;i<filesState.length();i++){JSONObject file=filesState.getJSONObject(i);if("ready".equals(file.optString("state"))){fileIds.add(file.getString("id"));fileSizes.add(file.optLong("size",0));}}
+    change(next->{
+     JSONArray messages=next.getJSONArray("messages");for(int i=0;i<messages.length();i++){JSONObject message=messages.getJSONObject(i);if(message.optString("deletedAt").isEmpty())message.put("deletedAt",now()).put("deletedBy",deviceId).put("text","").put("file",JSONObject.NULL);}
+     JSONArray nextFiles=next.getJSONArray("files");for(int i=0;i<nextFiles.length();i++){JSONObject file=nextFiles.getJSONObject(i);if("ready".equals(file.optString("state")))file.put("state","deleting");}
+     JSONObject nextChat=next.getJSONObject("chat");nextChat.put("revision",nextChat.optLong("revision",0)+1).put("epoch",nextChat.optLong("epoch",0)+1);revision[0]=nextChat.optLong("revision");epoch[0]=nextChat.optLong("epoch");
+     JSONArray operations=next.getJSONArray("operations");operations.put(new JSONObject().put("id",operationId).put("type","clear").put("chatId","legacy").put("actorId",deviceId).put("status","deleting").put("createdAt",now()).put("updatedAt",now()).put("result",new JSONObject().put("messages",active[0]).put("files",fileIds.size()).put("bytes",0)));while(operations.length()>100)operations.remove(0);
+    });
+   }
+   for(MiniHttp.Request pending:new ArrayList<>(uploadRequests.values()))try{pending.close();}catch(Exception ignored){}
+   long freedBytes=0;boolean cleanupPending=false;
+   for(int i=0;i<fileIds.size();i++){
+    final String fileId=fileIds.get(i);File disk=new File(files,fileId);
+    try{if(disk.exists()&&!disk.delete())throw new IOException();freedBytes+=fileSizes.get(i);synchronized(this){change(next->remove(next.getJSONArray("files"),"id",fileId));}}
+    catch(Exception e){cleanupPending=true;}
+   }
+   final String status=cleanupPending?"partial":"done";final JSONObject result=new JSONObject().put("messages",active[0]).put("files",fileIds.size()).put("bytes",freedBytes).put("freedBytes",freedBytes).put("cleanupPending",cleanupPending);
+   synchronized(this){change(next->{JSONObject op=find(next.getJSONArray("operations"),"id",operationId);if(op!=null)op.put("status",status).put("updatedAt",now()).put("result",result);});}
+   logEvent("chat_cleared",operationId,remote);
+   broadcast("chat_cleared",new JSONObject().put("chatId","legacy").put("revision",revision[0]).put("epoch",epoch[0]).put("operationId",operationId).put("freedBytes",freedBytes).put("cleanupPending",cleanupPending),false);
+   request.json(202,new JSONObject().put("operationId",operationId).put("status",status).put("revision",revision[0]).put("epoch",epoch[0]).put("freedBytes",freedBytes).put("cleanupPending",cleanupPending).toString());return;
+  }
+  if(route.startsWith("/api/operations/")&&request.method.equals("GET")){
+   if(!device.optBoolean("host"))throw new MiniHttp.Failure(403,"Операции доступны на главном устройстве");
+   JSONObject operation;String id=route.substring("/api/operations/".length());synchronized(this){operation=find(state.getJSONArray("operations"),"id",id);}
+   if(operation==null)throw new MiniHttp.Failure(404,"Операция не найдена");request.json(200,operationResponse(operation).toString());return;
   }
   if(route.equals("/api/files")&&request.method.equals("POST")){upload(request,device);return;}
   if(route.startsWith("/files/")&&(request.method.equals("GET")||request.method.equals("HEAD"))){download(request,route.substring(7));return;}
@@ -482,15 +579,17 @@ final class ChatHost implements AutoCloseable {
   JSONObject already=null;
   synchronized(this){
    JSONObject old=find(state.getJSONArray("messages"),"requestId",requestId);
-   if(old!=null&&old.optString("deviceId").equals(deviceId))already=old;
+   if(old!=null){if(!old.optString("deletedAt").isEmpty())throw new MiniHttp.Failure(410,"Сообщение было удалено");if(old.optString("deviceId").equals(deviceId))already=old;}
   }
   if(already!=null){request.discard();request.json(200,already.toString());return;}
+  final long epoch;
   synchronized(this){
    if(uploadIds.contains(requestId)||(uploads.containsKey(deviceId)&&uploads.get(deviceId)>=2))throw new MiniHttp.Failure(429,"Дождитесь текущей передачи");
    long used=totalBytes()+reservedTotal,deviceUsed=deviceBytes(deviceId)+reserved(deviceId);
    if(used+size>maxTotal||deviceUsed+size>maxDevice)throw new MiniHttp.Failure(507,"Хранилище заполнено. Удалите старые файлы на главном устройстве");
    if(files.getUsableSpace()-reservedTotal<size+minFree)throw new MiniHttp.Failure(507,"На главном устройстве мало свободного места");
    uploadIds.add(requestId);uploads.put(deviceId,(uploads.containsKey(deviceId)?uploads.get(deviceId):0)+1);
+   uploadRequests.put(requestId,request);uploadEpochs.put(requestId,state.getJSONObject("chat").optLong("epoch",0));epoch=uploadEpochs.get(requestId);
    reservedTotal+=size;reserved.put(deviceId,reserved(deviceId)+size);
   }
   String id=UUID.randomUUID().toString();File temporary=new File(files,id+".part"),file=new File(files,id);boolean committed=false;
@@ -498,6 +597,7 @@ final class ChatHost implements AutoCloseable {
    try(OutputStream out=new FileOutputStream(temporary)){request.transfer(out);}
    String mime=sniff(temporary);
    synchronized(this){
+    if(state.getJSONObject("chat").optLong("epoch",0)!=epoch)throw new MiniHttp.Failure(409,"Чат был очищен. Отправьте файл заново");
     if(totalBytes()+size>maxTotal||deviceBytes(deviceId)+size>maxDevice)throw new MiniHttp.Failure(507,"Хранилище заполнено. Удалите старые файлы на главном устройстве");
    }
    if(files.getUsableSpace()<minFree)throw new MiniHttp.Failure(507,"На главном устройстве мало свободного места");
@@ -508,14 +608,16 @@ final class ChatHost implements AutoCloseable {
   }finally{
    temporary.delete();if(!committed)file.delete();
    synchronized(this){
-    uploadIds.remove(requestId);uploads.put(deviceId,Math.max(0,(uploads.containsKey(deviceId)?uploads.get(deviceId):1)-1));
+    uploadIds.remove(requestId);uploadRequests.remove(requestId);uploadEpochs.remove(requestId);uploads.put(deviceId,Math.max(0,(uploads.containsKey(deviceId)?uploads.get(deviceId):1)-1));
     reservedTotal=Math.max(0,reservedTotal-size);long remaining=reserved(deviceId)-size;if(remaining<=0)reserved.remove(deviceId);else reserved.put(deviceId,remaining);
    }
   }
  }
  private static String sniff(File file) throws IOException {byte[] bytes=new byte[32];int read;try(InputStream in=new FileInputStream(file)){read=in.read(bytes);}if(read<12)return "application/octet-stream";if(bytes[0]==(byte)137&&bytes[1]==80&&bytes[2]==78&&bytes[3]==71)return "image/png";if(bytes[0]==(byte)255&&bytes[1]==(byte)216&&bytes[2]==(byte)255)return "image/jpeg";String start=new String(bytes,StandardCharsets.ISO_8859_1);if(start.startsWith("GIF87a")||start.startsWith("GIF89a"))return "image/gif";if(start.startsWith("RIFF")&&start.substring(8,12).equals("WEBP"))return "image/webp";if(start.substring(4,8).equals("ftyp"))return start.substring(8,12).matches("(hei.|mif.|avi.)")?"application/octet-stream":"video/mp4";if(bytes[0]==26&&bytes[1]==69&&bytes[2]==(byte)223&&bytes[3]==(byte)163)return "video/webm";return "application/octet-stream";}
  private void download(MiniHttp.Request request,String id) throws Exception {
-  JSONObject file;synchronized(this){file=find(state.getJSONArray("files"),"id",id);}if(file==null)throw new MiniHttp.Failure(404,"Файл не найден");
+  JSONObject file;JSONObject message=null;
+  synchronized(this){file=find(state.getJSONArray("files"),"id",id);if(file!=null&&"ready".equals(file.optString("state"))&&"legacy".equals(file.optString("chatId"))&&!file.optString("messageId").isEmpty())message=find(state.getJSONArray("messages"),"id",file.optString("messageId"));}
+  if(file==null||message==null||!message.optString("deletedAt").isEmpty())throw new MiniHttp.Failure(404,"Файл не найден");
   File disk=new File(files,file.getString("id"));if(!disk.isFile())throw new MiniHttp.Failure(404,"Файл удалён");
   long size=file.getLong("size"),start=0,end=size-1;int status=200;String range=request.header("range");Map<String,String> headers=new LinkedHashMap<>();headers.put("Accept-Ranges","bytes");
   if(!range.isEmpty()){
