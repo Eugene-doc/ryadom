@@ -3,6 +3,7 @@
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -146,4 +147,63 @@ test('deleted requestId cannot resurrect a message', async () => {
  const retry = await req('/api/messages', { method: 'POST', body: { text: 'вернуть', requestId: 'delete-retry-1' }, cookie: device });
  assert.equal(retry.r.status, 410);
  assert.equal((await req('/api/messages', { cookie: device })).data.some(m => m.id === message.id), false);
+});
+
+test('clear preview and clear remove history and files', async () => {
+ const host = await login();
+ const device = await pair(host, 'Очистка');
+ const message = await text(device, 'очистить', 'clear-text-1');
+ const attachment = await upload(device, 'clear.txt', 'clear-file-1');
+ const preview = await req('/api/chat/clear/preview', { cookie: host });
+ assert.equal(preview.r.status, 200);
+ assert.ok(preview.data.activeMessages >= 2);
+ assert.ok(preview.data.bytes >= 1);
+ assert.equal(preview.data.tempFiles, 0);
+ const clear = await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-op-1' }, cookie: host });
+ assert.equal(clear.r.status, 202, JSON.stringify(clear.data) + logs);
+ assert.equal(clear.data.operationId, 'clear-op-1');
+ assert.equal(clear.data.epoch, 1);
+ const state = await req('/api/state', { cookie: device });
+ assert.equal(state.data.messages.length, 0);
+ assert.equal(state.data.total, 0);
+ assert.equal(state.data.chat.epoch, 1);
+ assert.equal((await req(`/files/${attachment.file.id}`, { cookie: device })).r.status, 404);
+ const empty = await req('/api/chat/clear/preview', { cookie: host });
+ assert.equal(empty.data.activeMessages, 0);
+ assert.equal(empty.data.activeFiles, 0);
+ const op = await req('/api/operations/clear-op-1', { cookie: host });
+ assert.equal(op.r.status, 200);
+ assert.equal(op.data.status, 'done');
+ assert.ok(op.data.freedBytes >= 1);
+ assert.equal((await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-op-2' }, cookie: host })).r.status, 409);
+ assert.equal((await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: state.data.chat.revision, operationId: 'clear-op-3' }, cookie: host })).r.status, 202);
+ assert.equal(message.id.length > 0, true);
+});
+
+test('clear rejects non-host', async () => {
+ const host = await login();
+ const device = await pair(host, 'Не главный');
+ const preview = await req('/api/chat/clear/preview', { cookie: device });
+ assert.equal(preview.r.status, 403);
+ const clear = await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: 0, operationId: 'clear-denied' }, cookie: device });
+ assert.equal(clear.r.status, 403);
+});
+
+test('clear cancels an in-flight upload', async () => {
+ const host = await login();
+ const device = await pair(host, 'Передача');
+ const preview = await req('/api/chat/clear/preview', { cookie: host });
+ const socket = net.connect(port, '127.0.0.1');
+ socket.on('error', () => {});
+ await new Promise((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+ socket.write(`POST /api/files?name=slow.bin&requestId=clear-slow-1 HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nCookie: ${device}\r\nX-Ryadom: 1\r\nContent-Type: application/octet-stream\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n`);
+ socket.write(Buffer.alloc(1024, 1));
+ await new Promise(r => setTimeout(r, 200));
+ const clear = await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-slow-op' }, cookie: host });
+ assert.equal(clear.r.status, 202, JSON.stringify(clear.data) + logs);
+ await new Promise(r => setTimeout(r, 400));
+ const state = await req('/api/state', { cookie: device });
+ assert.equal(state.data.messages.length, 0);
+ assert.equal((await req('/api/chat/clear/preview', { cookie: host })).data.tempFiles, 0);
+ socket.destroy();
 });

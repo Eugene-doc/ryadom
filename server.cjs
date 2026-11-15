@@ -56,6 +56,10 @@ const now = () => new Date().toISOString();
 const iso = ms => new Date(ms).toISOString();
 function chatRow() { return db.prepare('SELECT * FROM chats WHERE id=?').get('legacy'); }
 function bumpRevision() { db.prepare('UPDATE chats SET revision=revision+1 WHERE id=?').run('legacy'); return chatRow().revision; }
+function operationResponse(row) {
+ let result = {}; try { result = JSON.parse(row.result || '{}'); } catch {}
+ return { id: row.id, type: row.type, chatId: row.chatId, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt, error: row.error, ...result };
+}
 const address = x => String(x || '').replace(/^::ffff:/, '');
 function safeEqual(a, b) { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
 function isPrivate(ip) {
@@ -154,6 +158,7 @@ const clients = new Map();
 const attempts = new Map();
 const activeUploads = new Map();
 const uploadJobs = new Set();
+const uploadMeta = new Map();
 const hostTokens = new Map();
 const pendingPairs = new Map();
 const rate = new Map();
@@ -340,16 +345,67 @@ const server = http.createServer(async (req, res) => {
    broadcast('message_deleted', { id, chatId: 'legacy', revision, freedBytes, deletedBy: d.id, cleanupPending });
    return send(res, 200, { ok: true, id, chatId: 'legacy', revision, freedBytes, cleanupPending });
   }
+  if (route === '/api/chat/clear/preview' && req.method === 'GET') {
+   if (!d.host) throw error(403, 'Очистка доступна на главном устройстве');
+   const chat = chatRow();
+   const activeMessages = db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n;
+   const files = db.prepare("SELECT count(*) AS n, COALESCE(SUM(size),0) AS bytes FROM files WHERE chatId='legacy' AND state='ready'").get();
+   const tempFiles = fs.readdirSync(uploads).filter(name => name.endsWith('.part')).length;
+   return send(res, 200, { chatId: 'legacy', revision: chat.revision, epoch: chat.epoch, activeMessages, activeFiles: files.n, bytes: files.bytes, tempFiles });
+  }
+  if (route === '/api/chat/clear' && req.method === 'POST') {
+   if (!d.host) throw error(403, 'Очистка доступна на главном устройстве');
+   const body = await json(req);
+   if (body.confirm !== true) throw error(400, 'Подтвердите очистку');
+   const operationId = String(body.operationId || '').slice(0, 80);
+   if (!operationId) throw error(400, 'Нужен идентификатор операции');
+   const existing = db.prepare('SELECT * FROM operations WHERE id=?').get(operationId);
+   if (existing) return send(res, 200, operationResponse(existing));
+   const chat = chatRow();
+   if (Number(body.revision) !== chat.revision) throw error(409, 'Чат изменился. Обновите данные и повторите');
+   const files = db.prepare("SELECT id,size FROM files WHERE chatId='legacy' AND state='ready'").all();
+   const activeMessages = db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n;
+   const bytes = files.reduce((sum, file) => sum + file.size, 0);
+   let next;
+   db.exec('BEGIN');
+   try {
+    db.prepare("UPDATE messages SET deletedAt=?,deletedBy=?,text='',file=NULL WHERE deletedAt IS NULL").run(now(), d.id);
+    db.prepare("UPDATE files SET state='deleting' WHERE chatId='legacy' AND state='ready'").run();
+    db.prepare('UPDATE chats SET revision=revision+1,epoch=epoch+1 WHERE id=?').run('legacy');
+    next = chatRow();
+    db.prepare('INSERT INTO operations (id,type,chatId,actorId,status,createdAt,updatedAt,result,error) VALUES (?,?,?,?,?,?,?,?,?)').run(operationId, 'clear', 'legacy', d.id, 'deleting', now(), now(), JSON.stringify({ messages: activeMessages, files: files.length, bytes }), null);
+    db.exec('COMMIT');
+   } catch (e) { db.exec('ROLLBACK'); throw e; }
+   for (const meta of uploadMeta.values()) if (meta.chatId === 'legacy') { try { meta.req.destroy(); } catch {} }
+   let freedBytes = 0, cleanupPending = false;
+   for (const file of files) {
+    try { fs.rmSync(path.join(uploads, file.id), { force: true }); db.prepare('DELETE FROM files WHERE id=?').run(file.id); freedBytes += file.size; }
+    catch { cleanupPending = true; }
+   }
+   const status = cleanupPending ? 'partial' : 'done';
+   const result = { messages: activeMessages, files: files.length, bytes, freedBytes, cleanupPending };
+   db.prepare('UPDATE operations SET status=?,updatedAt=?,result=?,error=? WHERE id=?').run(status, now(), JSON.stringify(result), cleanupPending ? 'Не все файлы удалены' : null, operationId);
+   logEvent('chat_cleared', operationId, address(peer));
+   broadcast('chat_cleared', { chatId: 'legacy', revision: next.revision, epoch: next.epoch, operationId, freedBytes, cleanupPending });
+   return send(res, 202, { operationId, status, revision: next.revision, epoch: next.epoch, freedBytes, cleanupPending });
+  }
+  if (route.startsWith('/api/operations/') && req.method === 'GET') {
+   if (!d.host) throw error(403, 'Операции доступны на главном устройстве');
+   const operation = db.prepare('SELECT * FROM operations WHERE id=?').get(route.slice('/api/operations/'.length));
+   if (!operation) throw error(404, 'Операция не найдена');
+   return send(res, 200, operationResponse(operation));
+  }
   if (route === '/api/files' && req.method === 'POST') {
-   if (!allowRate(d.id, 'up', UPLOAD_PER_MIN)) throw error(429, 'Слишком много передач. Подождите минуту');
-   const size = Number(req.headers['content-length']);
+   if (!allowRate(d.id, 'up', UPLOAD_PER_MIN)) throw error(429, 'Слишком много передач. Подождите минуту');   const size = Number(req.headers['content-length']);
    if (!Number.isSafeInteger(size) || size < 1 || size > MAX_FILE) throw error(413, 'Файл должен быть от 1 байта до 512 МБ');
    const requestId = String(url.searchParams.get('requestId') || crypto.randomUUID()).slice(0, 80);
    const old = db.prepare('SELECT * FROM messages WHERE requestId=? AND deviceId=?').get(requestId, d.id);
    if (old) { req.resume(); return send(res, 200, message(old)); }
    if (uploadJobs.has(requestId) || (activeUploads.get(d.id) || 0) >= 2) throw error(429, 'Дождитесь завершения текущей передачи');
+   const epoch = chatRow().epoch;
    const release = reserveBytes(d.id, size);
    uploadJobs.add(requestId); activeUploads.set(d.id, (activeUploads.get(d.id) || 0) + 1);
+   uploadMeta.set(requestId, { chatId: 'legacy', epoch, deviceId: d.id, req });
    const id = crypto.randomUUID(); const tmp = path.join(uploads, `${id}.part`); const final = path.join(uploads, id); let committed = false;
    try {
     let count = 0;
@@ -357,6 +413,7 @@ const server = http.createServer(async (req, res) => {
     await pipeline(req, limit, fs.createWriteStream(tmp, { flags: 'wx' }));
     if (count !== size) throw error(400, 'Передача прервалась. Отправьте файл ещё раз');
     if (!db.prepare('SELECT id FROM devices WHERE id=?').get(d.id)) throw error(401, 'Доступ устройства отозван');
+    if (chatRow().epoch !== epoch) throw error(409, 'Чат был очищен. Отправьте файл заново');
     const f = { id, name: cleanName(url.searchParams.get('name')), mime: sniff(tmp), size: count };
     fs.renameSync(tmp, final);
     db.exec('BEGIN');
@@ -365,7 +422,7 @@ const server = http.createServer(async (req, res) => {
     catch (e) { db.exec('ROLLBACK'); throw e; }
     broadcast('message', result);
     return send(res, 201, result);
-   } finally { release(); uploadJobs.delete(requestId); activeUploads.set(d.id, Math.max(0, (activeUploads.get(d.id) || 1) - 1)); fs.rmSync(tmp, { force: true }); if (!committed) fs.rmSync(final, { force: true }); }
+   } finally { release(); uploadJobs.delete(requestId); uploadMeta.delete(requestId); activeUploads.set(d.id, Math.max(0, (activeUploads.get(d.id) || 1) - 1)); fs.rmSync(tmp, { force: true }); if (!committed) fs.rmSync(final, { force: true }); }
   }
   if (route.startsWith('/files/') && ['GET', 'HEAD'].includes(req.method)) {
    const f = db.prepare('SELECT * FROM files WHERE id=?').get(route.slice(7));
@@ -491,6 +548,9 @@ if (NATIVE_KEY && process.env.RYADOM_BRIDGE_PORT) {
 }
 server.listen(PORT, process.env.RYADOM_LAN_STATE ? '127.0.0.1' : '0.0.0.0', () => {
  for (const file of fs.readdirSync(uploads)) if (file.endsWith('.part')) fs.rmSync(path.join(uploads, file), { force: true });
+ for (const row of db.prepare("SELECT id FROM files WHERE state='deleting'").all()) {
+  try { fs.rmSync(path.join(uploads, row.id), { force: true }); db.prepare('DELETE FROM files WHERE id=?').run(row.id); } catch {}
+ }
  process.stdout.write('\x1b]0;Рядом — личный чат\x07');
  console.log(`\n  РЯДОМ · личный чат\n\n  Чат работает. Это окно можно свернуть.\n  Закрытие окна выключит чат для всех устройств.\n\n  Адреса для телефона:\n  ${lanAddresses().map(ip => `http://${ip}:${PORT}`).join('\n  ') || 'Подключитесь к Wi-Fi и перезапустите приложение.'}\n\n  Данные: ${DATA}\n`);
  openWindow();
