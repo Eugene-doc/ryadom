@@ -23,6 +23,7 @@ function Invoke-JvmTest([string]$Main,[hashtable]$Variables=@{}){
  finally { foreach($Key in $Variables.Keys){[Environment]::SetEnvironmentVariable($Key,$Saved[$Key],'Process')} }
 }
 Invoke-JvmTest 'local.ryadom.chat.AddressTest'
+Invoke-JvmTest 'local.ryadom.chat.NetworkFallbackTest'
 Invoke-JvmTest 'local.ryadom.chat.TlsTest'
 Invoke-JvmTest 'local.ryadom.chat.SessionSecurityTest'
 Invoke-JvmTest 'local.ryadom.chat.TimeoutTest' @{RYADOM_HTTP_HEADER_TIMEOUT_MS='800';RYADOM_HTTP_BODY_TIMEOUT_MS='600';RYADOM_HTTP_BODY_TOTAL_TIMEOUT_MS='1200'}

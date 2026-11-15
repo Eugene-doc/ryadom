@@ -103,7 +103,7 @@ public final class MainActivity extends Activity {
   card.addView(text("Адрес указан в разделе «Подключить устройство». ПК может быть подключён кабелем, телефон — по Wi-Fi. Нужна одна подсеть без изоляции клиентов.",11,MUTED));
   errorText=text(error,12,0xffa65042);space(card,12);card.addView(errorText);space(card,12);
   connectButton=new Button(this);connectButton.setText("Подключиться  →");connectButton.setTextSize(14);connectButton.setAllCaps(false);connectButton.setTextColor(Color.WHITE);connectButton.setBackground(box(GREEN,10));card.addView(connectButton,params(-1,dp(49)));connectButton.setOnClickListener(v->connect());
-  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.2.1  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
+  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.2.2  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
  }
  /** Reject DNS names, public addresses, credentials, paths and ambiguous IPv4 forms. */
  static String validateServer(String value) throws Exception {
@@ -130,7 +130,7 @@ public final class MainActivity extends Activity {
     try{TlsTrust.probe(plain,host,port,prefs);}finally{try{plain.close();}catch(Exception ignored){}}
     local=new DirectProxy(target,(address,number)->TlsTrust.connect(LanNetwork.select(this,address).connect(address,number),address,number,prefs));
    }catch(TlsPin.PinMismatch e){pin=e;problem=e.getMessage();}
-   catch(Exception e){problem="Нет прямой связи. Проверьте адрес и домашнюю Wi-Fi сеть. На главном устройстве разрешите «Рядом» входящие TCP 4280 и UDP 42800 (брандмауэр, в том числе сторонний: ESET, Kaspersky). Если Happ блокирует обход, добавьте «Рядом» в приложения Direct в Happ.\n"+(e.getMessage()==null?"":e.getMessage());}
+   catch(Exception e){String vpn=LanNetwork.vpnActive(this)?" Активен Happ/VPN: Android не позволяет принудительно обойти чужой VPN. Включите в Happ маршрут локальной сети напрямую (Direct) или добавьте «Рядом» в исключения и повторите.":"";problem="Нет прямой связи. Проверьте адрес и домашнюю Wi-Fi сеть. На главном устройстве разрешите «Рядом» входящие TCP 4280 и UDP 42800 (брандмауэр, в том числе сторонний: ESET, Kaspersky). Если Happ блокирует обход, добавьте «Рядом» в приложения Direct в Happ."+vpn+"\n"+(e.getMessage()==null?"":e.getMessage());}
    final String failure=problem;final DirectProxy ready=local;final TlsPin.PinMismatch mismatch=pin;
    runOnUiThread(()->{if(isFinishing()||screenGeneration!=generation){if(ready!=null)ready.close();return;}if(mismatch!=null){connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);showPinReset(mismatch.address());}else if(failure.isEmpty()){if(proxy!=null)proxy.close();proxy=ready;base=proxy.base();hosting=false;prefs.edit().putString("server",target).apply();showChat();}else{connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);}});});
  }

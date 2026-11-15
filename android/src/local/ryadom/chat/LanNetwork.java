@@ -21,10 +21,49 @@ final class LanNetwork {
  }
  boolean contains(String ip){for(LinkAddress a:addresses)if(sameSubnet(a.getAddress().getAddress(),a.getPrefixLength(),ip))return true;return false;}
  boolean available(){NetworkCapabilities c=manager.getNetworkCapabilities(network);return c!=null&&!c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)&&c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);}
- void bindProcess() throws IOException {if(!manager.bindProcessToNetwork(network))throw new IOException("Android не разрешил прямой доступ. В Happ добавьте «Рядом» в приложения, работающие напрямую (Direct).");}
- Socket connect(String host,int port) throws IOException {if(!contains(host)||!available())throw new IOException("Локальная сеть недоступна");Socket s=network.getSocketFactory().createSocket();try{s.connect(new InetSocketAddress(InetAddress.getByName(host),port),5000);s.setSoTimeout(120000);s.setTcpNoDelay(true);return s;}catch(IOException e){s.close();throw e;}}
- HttpURLConnection connection(URL url) throws IOException {if(!contains(url.getHost())||!available())throw new IOException("Локальная сеть недоступна");return (HttpURLConnection)network.openConnection(url,java.net.Proxy.NO_PROXY);}
+ /** Best effort: under a third-party VPN Android may reject binding the process to Wi-Fi with EPERM. */
+ boolean bindProcess(){try{return manager.bindProcessToNetwork(network);}catch(Exception e){return false;}}
+ Socket connect(String host,int port) throws IOException {
+  if(!contains(host)||!available())throw new IOException("Локальная сеть недоступна");
+  IOException failure=null;
+  try{return connect(network.getSocketFactory().createSocket(),host,port);}
+  catch(IOException e){
+   if(!permissionFailure(e))throw e;
+   failure=e;
+  }catch(SecurityException e){failure=new IOException("Android запретил прямой доступ к локальной сети",e);}
+  // The VPN may reject Network.bindSocket with EPERM. An unbound socket still follows the
+  // system route, so Happ can send private addresses directly if its routing says "direct".
+  try{return connect(new Socket(),host,port);}
+  catch(IOException e){if(failure!=null)e.addSuppressed(failure);throw e;}
+ }
+ private Socket connect(Socket socket,String host,int port) throws IOException {
+  try{
+   socket.connect(new InetSocketAddress(InetAddress.getByName(host),port),5000);
+   socket.setSoTimeout(120000);socket.setTcpNoDelay(true);return socket;
+  }catch(IOException e){try{socket.close();}catch(Exception ignored){}throw e;}
+ }
+ HttpURLConnection connection(URL url) throws IOException {
+  if(!contains(url.getHost())||!available())throw new IOException("Локальная сеть недоступна");
+  try{return (HttpURLConnection)network.openConnection(url,java.net.Proxy.NO_PROXY);}
+  catch(IOException e){if(!permissionFailure(e))throw e;return (HttpURLConnection)url.openConnection(java.net.Proxy.NO_PROXY);}
+  catch(SecurityException e){return (HttpURLConnection)url.openConnection(java.net.Proxy.NO_PROXY);}
+ }
  List<String> ips(){List<String> result=new ArrayList<>();for(LinkAddress a:addresses)result.add(a.getAddress().getHostAddress());return result;}
+ static boolean vpnActive(Context context){
+  try{
+   ConnectivityManager manager=(ConnectivityManager)context.getSystemService(Context.CONNECTIVITY_SERVICE);
+   for(Network network:manager.getAllNetworks()){NetworkCapabilities c=manager.getNetworkCapabilities(network);if(c!=null&&c.hasTransport(NetworkCapabilities.TRANSPORT_VPN))return true;}
+  }catch(Exception ignored){}
+  return false;
+ }
+ static boolean permissionFailure(Throwable error){
+  for(Throwable e=error;e!=null;e=e.getCause()){
+   if(e instanceof SecurityException)return true;
+   String message=e.getMessage();
+   if(message!=null&&(message.contains("EPERM")||message.contains("Operation not permitted")||message.contains("Permission denied")))return true;
+  }
+  return false;
+ }
  static boolean sameSubnet(byte[] address,int prefix,String target){try{byte[] b=InetAddress.getByName(target).getAddress();if(b.length!=4||address.length!=4||prefix<1||prefix>32)return false;for(int i=0;i<4;i++){int bits=Math.min(8,Math.max(0,prefix-i*8));int mask=bits==0?0:(255<<(8-bits))&255;if((address[i]&mask)!=(b[i]&mask))return false;}return true;}catch(Exception e){return false;}}
  static boolean privateAddress(String host){String[] parts=host.split("\\.");if(parts.length!=4)return false;int[] n=new int[4];try{for(int i=0;i<4;i++){if(!parts[i].matches("0|[1-9][0-9]{0,2}"))return false;n[i]=Integer.parseInt(parts[i]);if(n[i]>255)return false;}}catch(Exception e){return false;}return n[0]==10||(n[0]==192&&n[1]==168)||(n[0]==172&&n[1]>=16&&n[1]<=31)||(n[0]==169&&n[1]==254);}
 }

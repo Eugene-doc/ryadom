@@ -30,7 +30,7 @@ public final class HostService extends Service {
    try{discovery=new Discovery(network.ips(),prefixes,Build.MODEL,network.network::bindSocket);}catch(Exception ignored){}
    callback=new ConnectivityManager.NetworkCallback(){@Override public void onLost(Network lost){if(lost.equals(network.network)){lastError="Домашняя сеть отключилась. Запустите чат заново после подключения к Wi-Fi.";new Handler(getMainLooper()).post(()->stopSelf());}}};
    network.manager.registerNetworkCallback(new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(),callback);
-  }catch(Exception e){lastError=e.getMessage()==null?"Не удалось запустить чат":e.getMessage();stopSelf();}
+  }catch(Exception e){String message=e.getMessage()==null?"Не удалось запустить чат":e.getMessage();if(LanNetwork.vpnActive(this))message+=" Активен Happ/VPN: Android не позволяет принудительно обойти чужой VPN. В Happ включите маршрут локальной сети напрямую (Direct) или добавьте «Рядом» в исключения.";lastError=message;stopSelf();}
   return START_NOT_STICKY;
  }
  @Override public void onDestroy(){if(callback!=null&&network!=null)try{network.manager.unregisterNetworkCallback(callback);}catch(Exception ignored){}if(discovery!=null)discovery.close();if(host!=null){host.close();host=null;}if(multicast!=null&&multicast.isHeld())multicast.release();if(wake!=null&&wake.isHeld())wake.release();if(network!=null)network.manager.bindProcessToNetwork(null);if(active==this)active=null;super.onDestroy();}
