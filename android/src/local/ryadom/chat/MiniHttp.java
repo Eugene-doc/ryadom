@@ -95,10 +95,14 @@ final class MiniHttp implements AutoCloseable {
   }catch(IOException e){close();throw e;}
  }
  private ServerSocket bind(String address,int port,SSLContext context) throws IOException {
-  if(context==null){ServerSocket listener=new ServerSocket();listener.setReuseAddress(true);listener.bind(new InetSocketAddress(InetAddress.getByName(address),port),64);return listener;}
-  SSLServerSocket listener=(SSLServerSocket)context.getServerSocketFactory().createServerSocket();
-  listener.setReuseAddress(true);listener.setNeedClientAuth(false);listener.setWantClientAuth(false);listener.setEnabledProtocols(new String[]{"TLSv1.2"});
-  listener.bind(new InetSocketAddress(InetAddress.getByName(address),port),64);return listener;
+  ServerSocket listener=context==null?new ServerSocket():(ServerSocket)context.getServerSocketFactory().createServerSocket();
+  try{
+   listener.setReuseAddress(true);
+   if(context!=null){SSLServerSocket ssl=(SSLServerSocket)listener;ssl.setNeedClientAuth(false);ssl.setWantClientAuth(false);ssl.setEnabledProtocols(new String[]{"TLSv1.2"});}
+   listener.bind(new InetSocketAddress(InetAddress.getByName(address),port),64);
+   return listener;
+  }catch(IOException e){try{listener.close();}catch(Exception ignored){}throw e;}
+  catch(RuntimeException e){try{listener.close();}catch(Exception ignored){}throw e;}
  }
  private void addListener(ServerSocket listener){
   listeners.add(listener);Thread thread=new Thread(()->accept(listener),"Ryadom accept");thread.setDaemon(true);thread.start();
@@ -107,8 +111,10 @@ final class MiniHttp implements AutoCloseable {
  private void accept(ServerSocket listener){
   while(!closed){
    Socket socket;
-   try{socket=listener.accept();socket.setTcpNoDelay(true);socket.setSoTimeout(HEADER_TIMEOUT_MS);}
-   catch(IOException e){if(closed)return;continue;}
+   try{socket=listener.accept();}
+   catch(Exception e){if(closed)return;continue;}
+   try{socket.setTcpNoDelay(true);socket.setSoTimeout(HEADER_TIMEOUT_MS);}
+   catch(Exception e){try{socket.close();}catch(Exception ignored){}continue;}
    if(!admit(socket)){try{socket.close();}catch(Exception ignored){}continue;}
    try{workers.execute(()->serve(socket));}catch(RejectedExecutionException e){release(socket);}
   }

@@ -1,8 +1,8 @@
-# Рядом 0.2.1
+# Рядом 0.2.2 (Android) · 0.2.1 (Windows)
 
 Личный мини-чат для Windows и Android. Обменивайтесь текстом, фото, видео и файлами между своими устройствами в одной домашней сети — без интернета и аккаунтов.
 
-**[Скачать для Windows](https://github.com/Eugene-doc/ryadom/releases/download/v0.2.1/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/Eugene-doc/ryadom/releases/download/v0.2.1/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/Eugene-doc/ryadom/releases/tag/v0.2.1)**
+**[Скачать для Windows 0.2.1](https://github.com/Eugene-doc/ryadom/releases/download/v0.2.1/Ryadom-Windows.exe) · [Скачать для Android 0.2.2](https://github.com/Eugene-doc/ryadom/releases/download/v0.2.2/Ryadom-Android.apk) · [Все выпуски](https://github.com/Eugene-doc/ryadom/releases)**
 
 ## Возможности
 
@@ -39,6 +39,6 @@
 | [LICENSE](LICENSE) | Лицензия MIT. |
 | [keys/](keys/) | Публичный сертификат и ключ для проверки подписи релизов. |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Лицензии сторонних компонентов. |
-| [CHANGELOG.md](CHANGELOG.md) | Что входит в выпуск 0.2.1. |
+| [CHANGELOG.md](CHANGELOG.md) | Что входит в выпуски 0.2.2 (Android) и 0.2.1 (Windows). |
 
-Используйте доверенную домашнюю сеть: передача идёт без TLS и сквозного шифрования. Серверы проверены автоматическими тестами; APK на физическом телефоне пока не проверен. Проверяйте хэши и подписи релизов по инструкции [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md). [Подробнее об ограничениях и проверках](docs/GUIDE.md).
+Используйте доверенную домашнюю сеть: канал между приложениями защищён TLS 1.2 с закреплением сертификата главного. Серверы проверены автоматическими тестами; APK 0.2.2 на физическом телефоне с Happ пока не проверен. Проверяйте хэши и подписи релизов по инструкции [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md). [Подробнее об ограничениях и проверках](docs/GUIDE.md).
