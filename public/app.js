@@ -19,7 +19,7 @@ function applyState(data){
  const incoming=data.chat||{id:'legacy',revision:0,epoch:0};const reset=chat&&(chat.id!==incoming.id||chat.revision!==incoming.revision||chat.epoch!==incoming.epoch);chat=incoming;
  if(reset){messages.clear();canLoadOlder=false;}
  $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;
- $('app-version').textContent=`Приложение ${window.ryadom?.appVersion||'—'} · главное ${data.server.version||'—'}`;
+ $('app-version').textContent=`Приложение ${(typeof window.ryadom?.appVersion==='function'?window.ryadom.appVersion():window.ryadom?.appVersion)||'—'} · главное ${data.server.version||'—'}`;
  renderDevices();renderMessages();renderPending();updateButtons();
 }
 async function sync(){

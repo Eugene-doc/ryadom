@@ -20,6 +20,7 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.webkit.CookieManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -44,7 +45,10 @@ import java.net.URL;
 import java.net.URLDecoder;
 import java.net.Proxy;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -58,13 +62,39 @@ public final class MainActivity extends Activity {
  private TextView errorText;
  private Button connectButton;
  private SharedPreferences prefs;
- private String base="", downloadUrl="", downloadCookie="";
+ private String base="", downloadUrl="", downloadCookie="", downloadName="";
  private DirectProxy proxy;
  private boolean hosting=false;
  private int screenGeneration=0;
  private ValueCallback<Uri[]> fileCallback;
  private final ExecutorService io=Executors.newFixedThreadPool(2);
 
+ private final class Bridge {
+  @JavascriptInterface public String appVersion(){return ChatHost.VERSION;}
+  @JavascriptInterface public void openDownloads(){runOnUiThread(MainActivity.this::showDownloads);}
+ }
+ private void rememberDownload(Uri uri,String name){
+  try{
+   Set<String> values=new HashSet<>(prefs.getStringSet("downloads",Collections.<String>emptySet()));
+   values.add(System.currentTimeMillis()+"\t"+name.replace('\t',' ')+"\t"+uri);
+   if(values.size()>100){List<String> sorted=new ArrayList<>(values);Collections.sort(sorted);values=new HashSet<>(sorted.subList(sorted.size()-100,sorted.size()));}
+   prefs.edit().putStringSet("downloads",values).apply();
+  }catch(Exception ignored){}
+ }
+ private void showDownloads(){
+  List<String[]> rows=new ArrayList<>();
+  for(String value:prefs.getStringSet("downloads",Collections.<String>emptySet())){
+   String[] parts=value.split("\t",3);if(parts.length==3)rows.add(parts);
+  }
+  Collections.sort(rows,(a,b)->Long.compare(Long.parseLong(b[0]),Long.parseLong(a[0])));
+  if(rows.isEmpty()){new AlertDialog.Builder(this).setTitle("Загрузки Рядом").setMessage("Здесь появятся файлы, сохранённые из чата через Рядом.").setPositiveButton("Понятно",null).show();return;}
+  String[] labels=new String[rows.size()];for(int i=0;i<rows.size();i++)labels[i]=rows.get(i)[1];
+  new AlertDialog.Builder(this).setTitle("Сохранённые файлы Рядом").setItems(labels,(dialog,index)->{
+   String[] row=rows.get(index);
+   try{Uri uri=Uri.parse(row[2]);Intent view=new Intent(Intent.ACTION_VIEW).setDataAndType(uri,getContentResolver().getType(uri)).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);startActivity(view);}
+   catch(Exception e){Toast.makeText(this,"Не удалось открыть файл. Он мог быть перемещён.",Toast.LENGTH_LONG).show();}
+  }).setNegativeButton("Закрыть",null).show();
+ }
  @Override public void onCreate(Bundle state) {
   super.onCreate(state);
   prefs=getSharedPreferences("ryadom",MODE_PRIVATE);
@@ -167,16 +197,17 @@ public final class MainActivity extends Activity {
   });
   web.setDownloadListener((url,userAgent,disposition,mime,length)->{
    if(!sameServer(url))return;if(!downloadUrl.isEmpty()){Toast.makeText(this,"Сначала завершите сохранение предыдущего файла",Toast.LENGTH_SHORT).show();return;}
-   downloadUrl=url;downloadCookie=CookieManager.getInstance().getCookie(url);String name=android.webkit.URLUtil.guessFileName(url,disposition,mime);
+   downloadUrl=url;downloadCookie=CookieManager.getInstance().getCookie(url);String name=android.webkit.URLUtil.guessFileName(url,disposition,mime);downloadName=name;
    if(disposition!=null&&disposition.contains("filename*=UTF-8''")){try{name=URLDecoder.decode(disposition.substring(disposition.indexOf("filename*=UTF-8''")+17),"UTF-8");}catch(Exception ignored){}}
    Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT);save.addCategory(Intent.CATEGORY_OPENABLE);save.setType(mime==null?"application/octet-stream":mime);save.putExtra(Intent.EXTRA_TITLE,name);
    try{startActivityForResult(save,SAVE_FILE);}catch(Exception e){downloadUrl="";Toast.makeText(this,"Не удалось открыть сохранение файла",Toast.LENGTH_LONG).show();}
   });
+  web.addJavascriptInterface(new Bridge(),"ryadom");
   web.loadUrl(hosting&&HostService.active!=null&&HostService.active.host!=null?HostService.active.host.localUrl():base+"/");
  }
  @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);
   if(request==PICK_FILE&&fileCallback!=null){Uri[] uris=null;if(result==RESULT_OK&&data!=null){ClipData clips=data.getClipData();if(clips!=null){uris=new Uri[clips.getItemCount()];for(int i=0;i<uris.length;i++)uris[i]=clips.getItemAt(i).getUri();}else if(data.getData()!=null)uris=new Uri[]{data.getData()};}fileCallback.onReceiveValue(uris);fileCallback=null;}
-  if(request==SAVE_FILE){if(result!=RESULT_OK||data==null||data.getData()==null){downloadUrl="";return;}final Uri uri=data.getData();final String url=downloadUrl,cookie=downloadCookie;Toast.makeText(this,"Сохраняем файл…",Toast.LENGTH_SHORT).show();io.execute(()->{String notice="Файл сохранён";HttpURLConnection conn=null;try{conn=(HttpURLConnection)new URL(url).openConnection(Proxy.NO_PROXY);conn.setConnectTimeout(5000);conn.setReadTimeout(60000);conn.setInstanceFollowRedirects(false);if(cookie!=null)conn.setRequestProperty("Cookie",cookie);if(conn.getResponseCode()!=200)throw new Exception();long expected=conn.getContentLengthLong(),count=0;try(InputStream in=conn.getInputStream();OutputStream out=getContentResolver().openOutputStream(uri)){if(out==null)throw new Exception();byte[] buffer=new byte[65536];int n;while((n=in.read(buffer))!=-1){out.write(buffer,0,n);count+=n;}if(expected>=0&&count!=expected)throw new Exception();}}catch(Exception e){notice="Не удалось сохранить файл. Проверьте соединение и свободное место.";try{android.provider.DocumentsContract.deleteDocument(getContentResolver(),uri);}catch(Exception ignored){}}finally{if(conn!=null)conn.disconnect();}final String message=notice;runOnUiThread(()->{downloadUrl="";Toast.makeText(this,message,Toast.LENGTH_LONG).show();});});}
+  if(request==SAVE_FILE){if(result!=RESULT_OK||data==null||data.getData()==null){downloadUrl="";return;}final Uri uri=data.getData();try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}final String url=downloadUrl,cookie=downloadCookie,savedName=downloadName;Toast.makeText(this,"Сохраняем файл…",Toast.LENGTH_SHORT).show();io.execute(()->{String notice="Файл сохранён";HttpURLConnection conn=null;try{conn=(HttpURLConnection)new URL(url).openConnection(Proxy.NO_PROXY);conn.setConnectTimeout(5000);conn.setReadTimeout(60000);conn.setInstanceFollowRedirects(false);if(cookie!=null)conn.setRequestProperty("Cookie",cookie);if(conn.getResponseCode()!=200)throw new Exception();long expected=conn.getContentLengthLong(),count=0;try(InputStream in=conn.getInputStream();OutputStream out=getContentResolver().openOutputStream(uri)){if(out==null)throw new Exception();byte[] buffer=new byte[65536];int n;while((n=in.read(buffer))!=-1){out.write(buffer,0,n);count+=n;}if(expected>=0&&count!=expected)throw new Exception();}rememberDownload(uri,savedName);}catch(Exception e){notice="Не удалось сохранить файл. Проверьте соединение и свободное место.";try{android.provider.DocumentsContract.deleteDocument(getContentResolver(),uri);}catch(Exception ignored){}}finally{if(conn!=null)conn.disconnect();}final String message=notice;runOnUiThread(()->{downloadUrl="";downloadName="";Toast.makeText(this,message,Toast.LENGTH_LONG).show();});});}
  }
  @Override protected void onPause(){CookieManager.getInstance().flush();super.onPause();}
  @Override public void onBackPressed(){if(web!=null){web.evaluateJavascript("(function(){var d=document.querySelector('dialog[open]');if(d){d.close();return true;}return false;})()",value->{if(!"true".equals(value))moveTaskToBack(true);});}else super.onBackPressed();}
