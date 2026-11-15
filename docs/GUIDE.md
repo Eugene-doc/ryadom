@@ -6,7 +6,7 @@
 
 ## Готовые приложения
 
-**[Скачать выпуск 0.3.0 для Windows и Android](https://github.com/Eugene-doc/ryadom/releases/tag/v0.3.0)** — готовые приложения, исходники и инструкция находятся в разделе Releases.
+**[Скачать выпуск 0.3.0 для Windows и Android](https://github.com/Eugene-doc/ryadom/releases/tag/v0.3.0)** — готовые приложения, исходники и инструкция находятся в разделе Releases. Подробно, что изменилось: [docs/releases/0.3.0.md](releases/0.3.0.md).
 
 - `dist/Ryadom-Windows.exe` — Windows 10/11 x64; один переносимый файл, Node.js отдельно не требуется. Для собственного окна нужен установленный Microsoft Edge WebView2 Runtime.
 - `dist/Ryadom-Android.apk` — Android 8.0+; клиент и главное устройство в одном приложении.

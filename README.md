@@ -4,6 +4,8 @@
 
 **[Скачать для Windows](https://github.com/Eugene-doc/ryadom/releases/download/v0.3.0/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/Eugene-doc/ryadom/releases/download/v0.3.0/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/Eugene-doc/ryadom/releases/tag/v0.3.0)**
 
+**[Что нового в 0.3.0](docs/releases/0.3.0.md)** — удаление сообщений, очистка чата, загрузки, версия и собственное окно Windows.
+
 ## Возможности
 
 - **Текст и медиа** — сообщения, фото, видео и файлы до 512 МБ без сжатия.
@@ -37,11 +39,13 @@
 | [tests/](tests/) | Проверки передачи данных, доступа к чату и сетевых соединений. |
 | [docs/GUIDE.md](docs/GUIDE.md) | Подробная инструкция: установка, Happ, сеть, хранение данных и сборка из исходников. |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Дорожная карта обновлений: срочная безопасность, средние и малозначительные правки, функции, инженерия. |
+| [docs/releases/](docs/releases/) | «Что нового» для каждого выпуска; правило и шаблон для будущих релизов. |
+| [docs/releases/0.3.0.md](docs/releases/0.3.0.md) | Подробные примечания к текущему выпуску 0.3.0. |
 | [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) | Подпись и проверка релизов; где хранятся ключи и как их не потерять. |
 | [SECURITY.md](SECURITY.md) | Политика безопасности, модель угроз и приватный канал сообщений об уязвимостях. |
 | [LICENSE](LICENSE) | Лицензия MIT. |
 | [keys/](keys/) | Публичный сертификат и ключ для проверки подписи релизов. |
 | [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | Лицензии сторонних компонентов. |
-| [CHANGELOG.md](CHANGELOG.md) | Что входит в выпуск 0.3.0. |
+| [CHANGELOG.md](CHANGELOG.md) | Краткая история всех выпусков; подробности текущего — в `docs/releases/`. |
 
 Используйте доверенную домашнюю сеть: канал между приложениями защищён TLS 1.2 с закреплением сертификата главного. Для собственного окна Windows нужен Microsoft Edge WebView2 Runtime. Серверы проверены автоматическими тестами; APK на физическом телефоне пока не проверен. Проверяйте хэши и подписи релизов по инструкции [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md). [Подробнее об ограничениях и проверках](docs/GUIDE.md).
