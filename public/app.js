@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const icon = name => { const s=document.createElementNS('http://www.w3.org/2000/svg','svg');const u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href',`#i-${name}`);s.append(u);return s; };
 const el = (tag,cls,text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-let me=null, devices=[], messages=new Map(), pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
+let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
 const uuid=()=>{if(crypto.randomUUID)return crypto.randomUUID();const b=crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;return [...b].map((v,i)=>([4,6,8,10].includes(i)?'-':'')+v.toString(16).padStart(2,'0')).join('');};
 const sizeText=n=>n<1024?`${n} Б`:n<1024*1024?`${(n/1024).toFixed(0)} КБ`:`${(n/1024/1024).toFixed(n<10*1024*1024?1:0)} МБ`;
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
@@ -11,8 +11,17 @@ async function api(route,method='GET',body){
  const data=await r.json();if(!r.ok){const e=new Error(data.error||'Не удалось выполнить действие');e.status=r.status;throw e;}return data;
 }
 async function copy(text){try{if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(text);else{const input=el('textarea');input.value=text;input.className='copy-helper';(document.querySelector('dialog[open]')||document.body).append(input);input.select();const ok=document.execCommand('copy');input.remove();if(!ok)throw new Error();}toast('Скопировано');}catch{toast('Не удалось скопировать. Выделите текст вручную.');}}
-function showJoin(){events?.close();events=null;me=null;messages.clear();queue=[];pendingRequests=[];fingerprint='';storage=null;$('join-pending').hidden=true;$('join-error').textContent='';$('app').hidden=true;$('join-screen').hidden=false;$('device-name').value=/Android/i.test(navigator.userAgent)?'Мой Android':/iPhone|iPad/i.test(navigator.userAgent)?'Мой iPhone':'Мой ноутбук';if($('settings-dialog').open)$('settings-dialog').close();}
-function applyState(data){me=data.me;devices=data.devices;pairing=data.pairing;addresses=data.server.addresses;pendingRequests=data.pendingRequests||[];fingerprint=data.server.fingerprint||'';tlsEnabled=!!data.server.tls;storage=data.storage||null;if(data.server.protocol!==undefined&&data.server.protocol!==3)toast('Версия главного устройства несовместима. Обновите Рядом на всех устройствах.');$('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;renderDevices();renderMessages();renderPending();updateButtons();}
+function showJoin(){events?.close();events=null;me=null;chat=null;messages.clear();queue=[];pendingRequests=[];fingerprint='';storage=null;$('join-pending').hidden=true;$('join-error').textContent='';$('app').hidden=true;$('join-screen').hidden=false;$('device-name').value=/Android/i.test(navigator.userAgent)?'Мой Android':/iPhone|iPad/i.test(navigator.userAgent)?'Мой iPhone':'Мой ноутбук';if($('settings-dialog').open)$('settings-dialog').close();}
+function showUpdate(){events?.close();events=null;me=null;$('app').hidden=true;$('join-screen').hidden=false;$('join-error').textContent='Версия главного устройства несовместима. Обновите Рядом на всех устройствах.';}
+function applyState(data){
+ if(data.server&&data.server.protocol!==undefined&&data.server.protocol!==3){showUpdate();return;}
+ me=data.me;devices=data.devices;pairing=data.pairing;addresses=data.server.addresses;pendingRequests=data.pendingRequests||[];fingerprint=data.server.fingerprint||'';tlsEnabled=!!data.server.tls;storage=data.storage||null;
+ const incoming=data.chat||{id:'legacy',revision:0,epoch:0};const reset=chat&&(chat.id!==incoming.id||chat.revision!==incoming.revision||chat.epoch!==incoming.epoch);chat=incoming;
+ if(reset){messages.clear();canLoadOlder=false;}
+ $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;
+ $('app-version').textContent=`Приложение ${window.ryadom?.appVersion||'—'} · главное ${data.server.version||'—'}`;
+ renderDevices();renderMessages();renderPending();updateButtons();
+}
 async function sync(){
  if(syncing||!me)return;syncing=true;
  try{
@@ -26,6 +35,8 @@ function connectEvents(){
  events.onopen=()=>{online=true;renderConnection();sync();};
  events.onerror=()=>{online=false;renderConnection();sync();};
  events.addEventListener('message',e=>{const m=JSON.parse(e.data);messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
+ events.addEventListener('message_deleted',e=>{const d=JSON.parse(e.data);const old=messages.get(d.id);messages.delete(d.id);if(chat&&typeof d.revision==='number')chat.revision=d.revision;if(old?.file&&$('full-image').src.includes(old.file.id)&&$('image-dialog').open)$('image-dialog').close();const node=$('messages').querySelector(`[data-key="${CSS.escape(d.id)}"]`);node?.remove();renderMessages();});
+ events.addEventListener('chat_cleared',e=>{const d=JSON.parse(e.data);messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:d.revision??chat?.revision??0,epoch:d.epoch??chat?.epoch??0};if($('image-dialog').open)$('image-dialog').close();renderMessages(true);toast(d.cleanupPending?'Чат очищен, но некоторые файлы остались на диске. Повторите очистку позже.':'Чат и файлы очищены');});
  events.addEventListener('devices',e=>{devices=JSON.parse(e.data);renderDevices();});
  events.addEventListener('pair_request',e=>{if(me?.host){sync();toast('Новый запрос на подключение');if(!$('settings-dialog').open)openSettings();}});
  events.addEventListener('pairing',()=>{if(me?.host)sync();});
@@ -67,7 +78,7 @@ function renderMessage(m){
   if(f.mime.startsWith('video/')){const video=el('video','media-preview');video.controls=true;video.preload='metadata';video.playsInline=true;video.src=url;video.setAttribute('aria-label',f.name);bubble.append(video);}
   const detail=el('div','file-details');if(f.mime==='application/octet-stream'){const i=el('span','file-icon');i.append(icon('file'));detail.append(i);}const info=el('div','file-info');info.append(el('div','file-name',f.name),el('div','file-size',`${sizeText(f.size)} · Оригинал`));const download=el('a','file-download');download.href=`${url}?download`;download.download=f.name;download.title='Скачать оригинал';download.setAttribute('aria-label',`Скачать ${f.name}`);download.append(icon('download'));detail.append(info,download);bubble.append(detail);
  }
- const footer=el('div','message-footer');if(m.text){const c=el('button','message-copy');c.title='Скопировать текст';c.setAttribute('aria-label','Скопировать текст');c.append(icon('copy'));c.onclick=()=>copy(m.text);footer.append(c);}const time=el('time','',new Date(m.created).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}));time.dateTime=m.created;footer.append(time);if(own){const check=icon('check');check.setAttribute('aria-label','Сохранено на компьютере');footer.append(check);}bubble.append(footer);content.append(bubble);row.append(content);return row;
+ const footer=el('div','message-footer');if(m.text){const c=el('button','message-copy');c.title='Скопировать текст';c.setAttribute('aria-label','Скопировать текст');c.append(icon('copy'));c.onclick=()=>copy(m.text);footer.append(c);}if(own||me?.host){const d=el('button','message-delete');d.title='Удалить сообщение';d.setAttribute('aria-label','Удалить сообщение');d.append(icon('trash'));d.onclick=()=>openDeleteDialog(m);footer.append(d);}const time=el('time','',new Date(m.created).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}));time.dateTime=m.created;footer.append(time);if(own){const check=icon('check');check.setAttribute('aria-label','Сохранено на компьютере');footer.append(check);}bubble.append(footer);content.append(bubble);row.append(content);return row;
 }
 function addFiles(files){
  for(const f of files){if(queue.length>=20){toast('За один раз можно добавить до 20 файлов');break;}if(f.size>maxFile||!f.size){toast(`«${f.name}»: нужен файл от 1 байта до 512 МБ`);continue;}queue.push({id:uuid(),file:f,progress:0,status:'ready'});}renderQueue();updateButtons();
@@ -75,6 +86,44 @@ function addFiles(files){
 function renderQueue(){const list=$('attachment-list');list.replaceChildren();list.hidden=!queue.length;for(const item of queue){const row=el('div',`attachment-item ${item.status==='error'?'failed':''}`);row.append(icon(item.file.type.startsWith('image/')?'image':item.file.type.startsWith('video/')?'play':'file'));const info=el('div','attachment-info');info.append(el('div','attachment-name',item.file.name),el('div','attachment-status',item.status==='error'?'Не отправлен · нажмите отправить снова':item.status==='uploading'?`Передаём ${item.progress}%`:`${sizeText(item.file.size)} · Готов к отправке`));if(item.status==='uploading'){const progress=el('progress');progress.max=100;progress.value=item.progress;info.append(progress);}row.append(info);if(item.status!=='uploading'){const remove=el('button','icon-button');remove.setAttribute('aria-label',`Убрать ${item.file.name}`);remove.append(icon('close'));remove.disabled=sending;remove.onclick=()=>{queue=queue.filter(x=>x.id!==item.id);renderQueue();updateButtons();};row.append(remove);}list.append(row);}}
 function updateButtons(){$('send-button').disabled=sending||(!$('message-input').value.trim()&&!queue.length);$('attach-button').disabled=sending;}
 function upload(item){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST',`/api/files?name=${encodeURIComponent(item.file.name)}&requestId=${item.id}`);xhr.setRequestHeader('X-Ryadom','1');xhr.setRequestHeader('Content-Type','application/octet-stream');xhr.timeout=30*60*1000;item.status='uploading';renderQueue();xhr.upload.onprogress=e=>{if(e.lengthComputable){item.progress=Math.round(e.loaded/e.total*100);renderQueue();}};xhr.onload=()=>{let data;try{data=JSON.parse(xhr.responseText);}catch{reject(new Error('Не удалось получить подтверждение передачи'));return;}if(xhr.status>=200&&xhr.status<300)resolve(data);else reject(new Error(data.error||'Передача не удалась'));};xhr.onerror=()=>reject(new Error('Связь прервалась. Проверьте домашнюю сеть и повторите отправку'));xhr.ontimeout=()=>reject(new Error('Передача заняла слишком долго. Попробуйте ещё раз'));xhr.send(item.file);});}
+function openDeleteDialog(message){
+ deleteTarget=message;
+ $('delete-summary').textContent=message.file?`Сообщение и вложение «${message.file.name}» будут удалены у всех устройств.`:'Сообщение будет удалено у всех устройств.';
+ $('delete-dialog').showModal();
+}
+async function deleteMessage(){
+ const message=deleteTarget;if(!message)return;
+ const button=$('delete-confirm');button.disabled=true;
+ try{
+  const result=await api(`/api/messages/${encodeURIComponent(message.id)}`,'DELETE');
+  messages.delete(message.id);if(chat&&typeof result.revision==='number')chat.revision=result.revision;
+  if(message.file&&$('full-image').src.includes(message.file.id)&&$('image-dialog').open)$('image-dialog').close();
+  $('delete-dialog').close();renderMessages();toast(result.freedBytes?`Удалено, освобождено ${sizeText(result.freedBytes)}`:'Сообщение удалено');
+ }catch(e){toast(e.message);}
+ finally{button.disabled=false;deleteTarget=null;}
+}
+async function openClearDialog(){
+ if(!me?.host)return;
+ try{
+  const preview=await api('/api/chat/clear/preview');clearRevision=preview.revision;
+  $('clear-summary').textContent=`Будет удалено ${preview.activeMessages} сообщений и ${preview.activeFiles} файлов (${sizeText(preview.bytes)}). Незавершённых передач: ${preview.tempFiles}.`;
+  $('clear-dialog').showModal();
+ }catch(e){toast(e.message);}
+}
+async function clearChat(){
+ const button=$('clear-confirm');button.disabled=true;
+ try{
+  const result=await api('/api/chat/clear','POST',{confirm:true,revision:clearRevision,operationId:uuid()});
+  messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:result.revision,epoch:result.epoch};
+  if($('image-dialog').open)$('image-dialog').close();
+  $('clear-dialog').close();renderMessages(true);
+  toast(result.cleanupPending?`История очищена, но не все файлы удалены (${sizeText(result.freedBytes)}).`:`Чат и файлы очищены. Освобождено ${sizeText(result.freedBytes)}.`);
+ }catch(e){toast(e.message);}
+ finally{button.disabled=false;}
+}
+$('delete-confirm').onclick=deleteMessage;$('delete-cancel').onclick=()=>$('delete-dialog').close();$('delete-cancel-x').onclick=()=>$('delete-dialog').close();
+$('clear-chat-button').onclick=openClearDialog;$('clear-confirm').onclick=clearChat;$('clear-cancel').onclick=()=>$('clear-dialog').close();$('clear-cancel-x').onclick=()=>$('clear-dialog').close();
+$('downloads-button').onclick=()=>{if(window.ryadom&&typeof window.ryadom.openDownloads==='function')window.ryadom.openDownloads();else toast('Папка загрузок доступна в приложении Рядом для Windows или Android');};
 let pendingText=null;
 $('message-form').onsubmit=async e=>{e.preventDefault();if(sending)return;const input=$('message-input');const text=input.value.trim();if(!text&&!queue.length)return;sending=true;updateButtons();
  try{if(text){if(!pendingText||pendingText.text!==text)pendingText={text,requestId:uuid()};const m=await api('/api/messages','POST',pendingText);messages.set(m.id,m);pendingText=null;if(input.value.trim()===text)input.value='';input.style.height='auto';renderMessages(true);}for(const item of [...queue]){try{const m=await upload(item);messages.set(m.id,m);queue=queue.filter(x=>x.id!==item.id);renderMessages(true);renderQueue();}catch(e){item.status='error';renderQueue();throw e;}}}catch(e){toast(e.message||'Не удалось отправить. Проверьте соединение');}finally{sending=false;renderQueue();updateButtons();input.focus();}
@@ -92,7 +141,7 @@ $('search-toggle').onclick=()=>{$('search-bar').hidden=!$('search-bar').hidden;i
 $('load-older').onclick=async()=>{const a=$('scroll-area');const before=Math.min(...[...messages.values()].map(m=>m.seq));const previous=a.scrollHeight;$('load-older').disabled=true;try{const page=await api(`/api/messages?before=${before}`);page.forEach(m=>messages.set(m.id,m));canLoadOlder=page.length===100;renderMessages();a.scrollTop+=a.scrollHeight-previous;}catch(e){toast(e.message);}finally{$('load-older').disabled=false;}};
 function eventName(type){return {host_login:'вход главного',pair_request:'запрос на подключение',pair_approved:'подключение подтверждено',pair_rejected:'подключение отклонено',device_revoked:'устройство отозвано',logout:'выход',logout_all:'выход на всех'}[type]||type;}
 function renderPending(){const section=$('pending-section');if(!section)return;const host=!!me?.host;section.hidden=!host||!pendingRequests.length;if(section.hidden)return;const list=$('pending-list');list.replaceChildren();for(const p of pendingRequests){const row=el('div','settings-device');const info=el('div','device-detail');info.append(el('strong','',p.name),el('small','',`${p.ip} · ${new Date(p.created).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'})}`));row.append(info);const ok=el('button','button secondary','Подтвердить');ok.type='button';ok.onclick=async()=>{ok.disabled=true;try{await api('/api/host/pair/approve','POST',{requestId:p.requestId});toast('Устройство подключено');await sync();}catch(e){toast(e.message);ok.disabled=false;}};const no=el('button','text-button danger','Отклонить');no.type='button';no.onclick=async()=>{try{await api('/api/host/pair/reject','POST',{requestId:p.requestId});await sync();}catch(e){toast(e.message);}};row.append(ok,no);list.append(row);}}
-async function renderHostSecurity(){if(!me)return;const host=!!me.host;$('host-security').hidden=!host;if(!host)return;$('tls-fingerprint').textContent=fingerprint||'ещё не сформирован';$('storage-info').textContent=storage?`Занято ${sizeText(storage.usedBytes)} из ${sizeText(storage.totalBytes)}`:' ';try{const data=await api('/api/host/events');const box=$('host-events');box.replaceChildren();for(const ev of data.events.slice(0,12)){box.append(el('div','field-hint',`${new Date(ev.created).toLocaleString('ru-RU')} · ${eventName(ev.type)}${ev.detail?' · '+ev.detail:''}`));}}catch{}}
+async function renderHostSecurity(){if(!me)return;const host=!!me.host;$('host-security').hidden=!host;if(!host)return;$('tls-fingerprint').textContent=fingerprint||'ещё не сформирован';$('storage-info').textContent=storage?`Занято ${sizeText(storage.usedBytes)} из ${sizeText(storage.totalBytes)}`:' ';try{const data=await api('/api/host/events');const box=$('host-events');box.replaceChildren();for(const ev of data.events.slice(0,12)){box.append(el('div','field-hint',`${new Date(ev.created).toLocaleString('ru-RU')} · ${eventName(ev.type)}${ev.detail?' · '+ev.detail:''}`));}}catch{}try{const p=await api('/api/chat/clear/preview');$('chat-stats').textContent=`${p.activeMessages} сообщений · ${p.activeFiles} файлов · ${sizeText(p.bytes)}`;}catch{$('chat-stats').textContent='Не удалось получить размер истории';}}
 function renderPairing(){if(!pairing)return;const seconds=Math.max(0,Math.ceil((pairing.expires-Date.now())/1000));$('pairing-code').textContent=seconds?`${pairing.code.slice(0,4)} ${pairing.code.slice(4)}`:'•••• ••••';$('pairing-expiry').textContent=seconds?`Действует ещё ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`:'Подключение закрыто';$('copy-code').disabled=!seconds;$('disable-pairing').hidden=!seconds;}
 async function openSettings(){try{await sync();if(!me)return;$('pairing-section').hidden=!me.host;$('client-info').hidden=me.host;$('logout-button').hidden=me.host;$('stop-button').hidden=!me.host;$('tls-state').hidden=me.host;$('tls-state').textContent=tlsEnabled?'Соединение с главным защищено (TLS)':'Соединение с главным без шифрования. Обновите главное устройство.';$('rename-input').value=me.name;$('server-addresses').replaceChildren();$('no-address').hidden=addresses.length>0;for(const address of addresses){const row=el('div','server-address');row.append(el('code','',address));const c=el('button','icon-button');c.append(icon('copy'));c.setAttribute('aria-label','Скопировать адрес');c.onclick=()=>copy(address);row.append(c);$('server-addresses').append(row);}renderPairing();renderPending();renderHostSecurity();clearInterval(expiryTimer);expiryTimer=setInterval(renderPairing,1000);$('settings-dialog').showModal();}catch(e){toast(e.message);}}
 for(const id of ['sidebar-connect','connect-button','profile-button','mobile-settings'])$(id).onclick=openSettings;
