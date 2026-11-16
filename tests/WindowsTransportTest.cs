@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -15,6 +16,9 @@ class TransportTest {
   foreach(var n in nics)Console.WriteLine("Physical: "+n+" index="+n.Index);
   if(nics.Any(n=>n.Name.ToLower().Contains("happ")))throw new Exception("VPN was selected");
   var nic=nics[0];
+  if(!LanInterfaces.IsLocal(nic.Address))throw new Exception("Local address was not recognized");
+  if(LanInterfaces.IsLocal("203.0.113.7"))throw new Exception("Public address was treated as local");
+  Console.WriteLine("Self-address detection: PASS");
   using(var destination=new TcpBridge(nic.Address,0,c=>{throw new Exception();},c=>new byte[0],c=>{},s=>LanInterfaces.BindOutput(s,nic.Index))){}
   var listener=new TcpListener(IPAddress.Parse(nic.Address),0);LanInterfaces.BindOutput(listener.Server,nic.Index);listener.Start();int port=((IPEndPoint)listener.LocalEndpoint).Port;
   var service=Task.Run(()=>{using(var c=listener.AcceptTcpClient()){LanInterfaces.BindOutput(c.Client,nic.Index);var buffer=new byte[4096];int count=c.GetStream().Read(buffer,0,buffer.Length);c.GetStream().Write(buffer,0,count);}});
@@ -26,6 +30,32 @@ class TransportTest {
   string fingerprint;using(var certificate=TlsIdentity.EnsureHostCertificate(dir,out fingerprint)) {
    if(fingerprint.Length!=64)throw new Exception("TLS fingerprint mismatch");
    Console.WriteLine("TLS host certificate: "+fingerprint);
+   string pinAdmin=Path.Combine(dir,"admin-pins.txt");string adminError;
+   if(!TlsIdentity.Validate("admin",certificate,pinAdmin,out adminError))throw new Exception("Initial pin failed: "+adminError);
+   string pinned;if(!TlsIdentity.HasPin("admin",pinAdmin,out pinned,out adminError)||pinned!=fingerprint)throw new Exception("Pin was not stored");
+   if(!TlsIdentity.Forget("admin",pinAdmin,out adminError)||TlsIdentity.HasPin("admin",pinAdmin,out pinned,out adminError))throw new Exception("Pin forget failed: "+adminError);
+   if(!TlsIdentity.Remember("admin",fingerprint,pinAdmin,out adminError)||!TlsIdentity.HasPin("admin",pinAdmin,out pinned,out adminError))throw new Exception("Pin remember failed: "+adminError);
+   Console.WriteLine("TLS pin confirmation helpers: PASS");
+   var probeListener=new TcpListener(IPAddress.Loopback,0);probeListener.Start();
+   int probePort=((IPEndPoint)probeListener.LocalEndpoint).Port;
+   var probeTask=Task.Run(()=>{
+    for(int i=0;i<3;i++){using(var c=probeListener.AcceptTcpClient())using(var ssl=new SslStream(c.GetStream(),false)){
+     ssl.AuthenticateAsServer(certificate,false,(System.Security.Authentication.SslProtocols)3072,false);
+     var request=new byte[1024];ssl.Read(request,0,request.Length);
+     string body="{\"app\":\"ryadom\"}";byte[] reply=Encoding.UTF8.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "+body.Length+"\r\nConnection: close\r\n\r\n"+body);ssl.Write(reply,0,reply.Length);
+    }}
+   });
+   var loopback=new LanInterface{Name="loopback",Address="127.0.0.1",Mask="255.0.0.0",Index=1};
+   string probePin=Path.Combine(dir,"probe-pins.txt"),seen;bool first;string stored;
+   TlsIdentity.Probe(loopback,"127.0.0.1",probePort,out seen,out first,probePin);
+   if(!first||TlsIdentity.HasPin("127.0.0.1:"+probePort,probePin,out stored,out adminError))throw new Exception("First probe must not pin before confirmation");
+   if(!TlsIdentity.Remember("127.0.0.1:"+probePort,seen,probePin,out adminError))throw new Exception("Probe remember failed: "+adminError);
+   TlsIdentity.Probe(loopback,"127.0.0.1",probePort,out seen,out first,probePin);
+   if(first)throw new Exception("Confirmed probe pin was not reused");
+   File.WriteAllText(probePin,Convert.ToBase64String(Encoding.UTF8.GetBytes("127.0.0.1:"+probePort))+"\t00\n");
+   bool mismatch=false;try{TlsIdentity.Probe(loopback,"127.0.0.1",probePort,out seen,out first,probePin);}catch(TlsIdentity.PinMismatchException){mismatch=true;}
+   if(!mismatch)throw new Exception("Changed probe certificate was not a mismatch");
+   probeListener.Stop();probeTask.Wait();Console.WriteLine("TLS probe first-use confirmation and mismatch: PASS");
    var upstream=new TcpListener(IPAddress.Loopback,0);upstream.Start();int upstreamPort=((IPEndPoint)upstream.LocalEndpoint).Port;
    var echo=Task.Run(()=>{using(var c=upstream.AcceptTcpClient()){var s=c.GetStream();var b=new byte[4096];int n=s.Read(b,0,b.Length);s.Write(b,0,n);}});
    string pinFile=Path.Combine(dir,"pins.txt");

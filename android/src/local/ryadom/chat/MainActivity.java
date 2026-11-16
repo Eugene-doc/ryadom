@@ -37,6 +37,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
@@ -49,8 +50,10 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /** Native LAN-only shell. No JavaScript bridge, analytics, cloud services or storage permissions. */
 public final class MainActivity extends Activity {
@@ -133,7 +136,7 @@ public final class MainActivity extends Activity {
   card.addView(text("Адрес указан в разделе «Подключить устройство». ПК может быть подключён кабелем, телефон — по Wi-Fi. Нужна одна подсеть без изоляции клиентов.",11,MUTED));
   errorText=text(error,12,0xffa65042);space(card,12);card.addView(errorText);space(card,12);
   connectButton=new Button(this);connectButton.setText("Подключиться  →");connectButton.setTextSize(14);connectButton.setAllCaps(false);connectButton.setTextColor(Color.WHITE);connectButton.setBackground(box(GREEN,10));card.addView(connectButton,params(-1,dp(49)));connectButton.setOnClickListener(v->connect());
-  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.3.0  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
+  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.3.1  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
  }
  /** Reject DNS names, public addresses, credentials, paths and ambiguous IPv4 forms. */
  static String validateServer(String value) throws Exception {
@@ -147,8 +150,17 @@ public final class MainActivity extends Activity {
   return "http://"+host+":"+port;
  }
  private void connect(){
+  try{rejectSelf(validateServer(serverInput.getText().toString()));}catch(Exception e){errorText.setText(e.getMessage());return;}
   if(HostService.active!=null){new AlertDialog.Builder(this).setTitle("Остановить чат на телефоне?").setMessage("Другие устройства отключатся. История сохранится на телефоне. Затем вы подключитесь к другому главному устройству.").setNegativeButton("Отмена",null).setPositiveButton("Продолжить",(dialog,which)->{startService(new Intent(this,HostService.class).setAction("stop"));connectClient();}).show();return;}
   connectClient();
+ }
+ private void rejectSelf(String target) throws Exception {
+  URL remote=new URL(target);String host=remote.getHost();
+  LanNetwork network=LanNetwork.select(this,host);
+  if(network.ips().contains(host))throw new IOException("Этот телефон уже является главным устройством. Нельзя подключиться к самому себе: выберите другое устройство или оставьте текущую роль.");
+ }
+ private static String groupedFingerprint(String value){
+  if(value==null)return "";StringBuilder text=new StringBuilder();for(int i=0;i<value.length();i++){if(i>0&&i%4==0)text.append(' ');text.append(Character.toUpperCase(value.charAt(i)));}return text.toString();
  }
  private void connectClient(){
   final String target;try{target=validateServer(serverInput.getText().toString());}catch(Exception e){errorText.setText(e.getMessage());return;}
@@ -156,8 +168,20 @@ public final class MainActivity extends Activity {
   io.execute(()->{String problem="";DirectProxy local=null;TlsPin.PinMismatch pin=null;try{
     URL remote=new URL(target);final String host=remote.getHost();final int port=remote.getPort()==-1?4280:remote.getPort();
     LanNetwork network=LanNetwork.select(this,host);
+    if(network.ips().contains(host))throw new IOException("Этот телефон уже является главным устройством. Нельзя подключиться к самому себе: выберите другое устройство или оставьте текущую роль.");
     Socket plain=network.connect(host,port);
-    try{TlsTrust.probe(plain,host,port,prefs);}finally{try{plain.close();}catch(Exception ignored){}}
+    TlsPin.Inspection inspection;
+    try{inspection=TlsTrust.inspect(plain,host,port,prefs);}finally{try{plain.close();}catch(Exception ignored){}}
+    if(inspection.firstUse){
+     final CountDownLatch decided=new CountDownLatch(1);final boolean[] trusted={false};
+     final TlsPin.Inspection seen=inspection;
+     runOnUiThread(()->{
+      if(isFinishing()||screenGeneration!=generation){decided.countDown();return;}
+      new AlertDialog.Builder(this).setTitle("Проверка сертификата").setMessage("Впервые подключаетесь к "+host+":"+port+".\n\nОтпечаток сертификата:\n"+groupedFingerprint(seen.fingerprint)+"\n\nСверьте его на главном устройстве: Настройки → Безопасность. Доверять этому устройству?").setCancelable(false).setPositiveButton("Доверять",(dialog,which)->{trusted[0]=true;decided.countDown();}).setNegativeButton("Отмена",(dialog,which)->decided.countDown()).show();
+     });
+     try{if(!decided.await(120,TimeUnit.SECONDS)||!trusted[0])throw new IOException("Подключение отменено: сертификат не подтверждён.");}catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IOException("Подключение отменено.");}
+     TlsTrust.remember(prefs,inspection.key,inspection.fingerprint);
+    }
     local=new DirectProxy(target,(address,number)->TlsTrust.connect(LanNetwork.select(this,address).connect(address,number),address,number,prefs));
    }catch(TlsPin.PinMismatch e){pin=e;problem=e.getMessage();}
    catch(Exception e){String vpn=LanNetwork.vpnActive(this)?" Активен Happ/VPN: Android не позволяет принудительно обойти чужой VPN. Включите в Happ маршрут локальной сети напрямую (Direct) или добавьте «Рядом» в исключения и повторите.":"";problem="Нет прямой связи. Проверьте адрес и домашнюю Wi-Fi сеть. На главном устройстве разрешите «Рядом» входящие TCP 4280 и UDP 42800 (брандмауэр, в том числе сторонний: ESET, Kaspersky). Если Happ блокирует обход, добавьте «Рядом» в приложения Direct в Happ."+vpn+"\n"+(e.getMessage()==null?"":e.getMessage());}
@@ -168,7 +192,24 @@ public final class MainActivity extends Activity {
  private void showPinReset(final String address){
   new AlertDialog.Builder(this).setTitle("Сертификат главного устройства изменился").setMessage(TlsPin.CHANGED).setNegativeButton("Отмена",null).setPositiveButton("Сбросить доверие для этого адреса",(dialog,which)->{TlsTrust.reset(prefs,address);connectClient();}).show();
  }
- private void findChats(Button button){button.setEnabled(false);button.setText("Ищем в домашней сети…");final int generation=screenGeneration;io.execute(()->{List<Discovery.Found> found=new ArrayList<>();String problem="";WifiManager.MulticastLock lock=null;try{LanNetwork network=LanNetwork.select(this,null);WifiManager wifi=(WifiManager)getApplicationContext().getSystemService(WIFI_SERVICE);lock=wifi.createMulticastLock("Ryadom search");lock.acquire();List<Integer> prefixes=new ArrayList<>();for(LinkAddress a:network.addresses)prefixes.add(a.getPrefixLength());found=Discovery.find(network.ips(),prefixes,network.network::bindSocket);}catch(Exception e){problem=e.getMessage()==null?"Не удалось найти устройства":e.getMessage();}finally{if(lock!=null&&lock.isHeld())lock.release();}final List<Discovery.Found> results=found;final String error=problem;runOnUiThread(()->{if(isFinishing()||screenGeneration!=generation)return;button.setEnabled(true);button.setText("Найти главное устройство в сети");if(results.isEmpty()){errorText.setText(error.isEmpty()?"Чаты не найдены. Запустите чат на ПК или телефоне, либо введите адрес вручную. Проверьте, что сеть не гостевая и изоляция клиентов отключена.":error);return;}String[] labels=new String[results.size()];for(int i=0;i<labels.length;i++)labels[i]=results.get(i).toString();new AlertDialog.Builder(this).setTitle("Главное устройство").setItems(labels,(dialog,index)->{Discovery.Found f=results.get(index);serverInput.setText(f.address+":"+f.port);connect();}).setNegativeButton("Отмена",null).show();});});}
+ private void findChats(Button button){
+  button.setEnabled(false);button.setText("Ищем в домашней сети…");final int generation=screenGeneration;
+  io.execute(()->{
+   List<Discovery.Found> found=new ArrayList<>();String problem="";WifiManager.MulticastLock lock=null;final List<String> localIps=new ArrayList<>();
+   try{LanNetwork network=LanNetwork.select(this,null);localIps.addAll(network.ips());WifiManager wifi=(WifiManager)getApplicationContext().getSystemService(WIFI_SERVICE);lock=wifi.createMulticastLock("Ryadom search");lock.acquire();List<Integer> prefixes=new ArrayList<>();for(LinkAddress a:network.addresses)prefixes.add(a.getPrefixLength());found=Discovery.find(network.ips(),prefixes,network.network::bindSocket);}
+   catch(Exception e){problem=e.getMessage()==null?"Не удалось найти устройства":e.getMessage();}
+   finally{if(lock!=null&&lock.isHeld())lock.release();}
+   final List<Discovery.Found> visible=new ArrayList<>();for(Discovery.Found item:found)if(!localIps.contains(item.address))visible.add(item);
+   final List<Discovery.Found> scanned=found;final String error=problem;
+   runOnUiThread(()->{
+    if(isFinishing()||screenGeneration!=generation)return;
+    button.setEnabled(true);button.setText("Найти главное устройство в сети");
+    if(visible.isEmpty()){errorText.setText(scanned.isEmpty()?(error.isEmpty()?"Чаты не найдены. Запустите чат на ПК или телефоне, либо введите адрес вручную. Проверьте, что сеть не гостевая и изоляция клиентов отключена.":error):"Найден только этот телефон. Он уже главный — выберите другое устройство или создайте чат здесь.");return;}
+    String[] labels=new String[visible.size()];for(int i=0;i<labels.length;i++)labels[i]=visible.get(i).toString();
+    new AlertDialog.Builder(this).setTitle("Главное устройство").setItems(labels,(dialog,index)->{Discovery.Found f=visible.get(index);serverInput.setText(f.address+":"+f.port);connect();}).setNegativeButton("Отмена",null).show();
+   });
+  });
+ }
  private void startHosting(){
   if(HostService.active!=null&&HostService.active.host!=null){openHost();return;}
   if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},43);

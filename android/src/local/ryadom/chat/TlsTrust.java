@@ -20,5 +20,9 @@ final class TlsTrust {
  static String probe(Socket plain,String host,int port,SharedPreferences preferences) throws IOException {
   return TlsPin.probe(plain,host,port,TlsPin.address(host,port),store(preferences));
  }
+ static TlsPin.Inspection inspect(Socket plain,String host,int port,SharedPreferences preferences) throws IOException {
+  return TlsPin.inspect(plain,host,port,TlsPin.address(host,port),store(preferences));
+ }
+ static void remember(SharedPreferences preferences,String key,String fingerprint){store(preferences).put(key,fingerprint);}
  static void reset(SharedPreferences preferences,String address){store(preferences).remove(address);}
 }

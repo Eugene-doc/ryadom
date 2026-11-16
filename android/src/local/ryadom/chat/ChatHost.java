@@ -18,7 +18,7 @@ import java.util.concurrent.*;
 final class ChatHost implements AutoCloseable {
  interface Assets {byte[] read(String name) throws IOException;}
  interface Mutation {void apply(JSONObject next) throws Exception;}
- static final String VERSION="0.3.0";static final int PROTOCOL=3;
+ static final String VERSION="0.3.1";static final int PROTOCOL=3;
  static final long MAX_FILE=512L*1024*1024;
  static final int MAX_STREAMS=8,MAX_EVENT_LOG=500,MAX_PENDING_DEFAULT=5;
  final File directory,files,stateFile;final Assets assets;final List<String> addresses;final int port;
@@ -211,10 +211,11 @@ final class ChatHost implements AutoCloseable {
   return result;
  }
  private synchronized JSONArray publicDevices() throws Exception {
-  JSONArray result=new JSONArray(),all=state.getJSONArray("devices");
+  JSONArray result=new JSONArray(),all=state.getJSONArray("devices"),sessions=state.getJSONArray("sessions");
   for(int i=0;i<all.length();i++){
-   JSONObject device=all.getJSONObject(i);String id=device.getString("id");
-   result.put(new JSONObject().put("id",id).put("name",device.getString("name")).put("host",device.optBoolean("host")).put("created",device.optString("created")).put("online",deviceStreams.containsKey(id)));
+   JSONObject device=all.getJSONObject(i);String id=device.getString("id"),lastSeen="";
+   for(int j=0;j<sessions.length();j++){JSONObject session=sessions.getJSONObject(j);if(id.equals(session.optString("deviceId"))&&session.optString("lastSeen").compareTo(lastSeen)>0)lastSeen=session.optString("lastSeen");}
+   result.put(new JSONObject().put("id",id).put("name",device.getString("name")).put("host",device.optBoolean("host")).put("created",device.optString("created")).put("lastSeen",lastSeen).put("online",deviceStreams.containsKey(id)));
   }
   return result;
  }

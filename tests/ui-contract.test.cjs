@@ -8,7 +8,7 @@ const html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
 const js = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
 
 test('0.3.0 UI exposes deletion, clear, downloads and version controls', () => {
- for (const id of ['delete-dialog', 'delete-confirm', 'clear-chat-button', 'clear-dialog', 'clear-confirm', 'downloads-button', 'app-version', 'chat-stats']) {
+ for (const id of ['delete-dialog', 'delete-confirm', 'clear-chat-button', 'clear-dialog', 'clear-confirm', 'downloads-button', 'app-version', 'chat-stats', 'forget-offline']) {
   assert.match(html, new RegExp(`id="${id}"`), `missing #${id}`);
  }
  assert.match(js, /\/api\/messages\/\$\{encodeURIComponent\(message\.id\)\}/);
@@ -20,5 +20,8 @@ test('0.3.0 UI exposes deletion, clear, downloads and version controls', () => {
  assert.match(js, /deletionRevision/);
  assert.match(js, /clearOperationId/);
  assert.match(js, /openDownloads/);
+ assert.match(js, /forget-offline/);
+ assert.match(html, /История и главное устройство/);
+ assert.match(html, /Забыть неактивные устройства/);
  assert.match(js, /data\.server\.protocol!==3/);
 });

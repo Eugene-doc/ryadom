@@ -66,7 +66,7 @@ namespace Ryadom {
    }
   }
   private ChatApplication(RolePicker picker) {
-   choice=picker;File.WriteAllText(Path.Combine(Data,"desktop-role"),choice.Hosting?"host":"client");if(!choice.Hosting)File.WriteAllText(Path.Combine(Data,"last-target"),choice.Target+":"+choice.TargetPort);
+   choice=picker;File.WriteAllText(Path.Combine(Data,"desktop-role"),choice.Hosting?"host":"client");if(!choice.Hosting)File.WriteAllText(Path.Combine(Data,"last-target"),choice.Target+":"+choice.TargetPort);else try{File.Delete(Path.Combine(Data,"last-target"));}catch{}
    File.Delete(Path.Combine(Data,"choose-role"));
    tray=new NotifyIcon{Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath),Text=choice.Hosting?"Рядом · главное устройство":"Рядом · подключён к чату"};
    var menu=new ContextMenuStrip();menu.Items.Add("Открыть чат",null,(s,e)=>OpenChat(false));if(choice.Hosting){menu.Items.Add("Подключить устройство",null,(s,e)=>OpenChat(true));menu.Items.Add("Настроить брандмауэр",null,(s,e)=>FirewallAdvisor.Configure(Data));menu.Items.Add("Проверить брандмауэр и сеть",null,(s,e)=>FirewallAdvisor.ShowReport());}

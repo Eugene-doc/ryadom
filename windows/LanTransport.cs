@@ -27,6 +27,13 @@ namespace Ryadom {
  }
  internal static class LanInterfaces {
   public static bool Private(string ip) {IPAddress a;if(!IPAddress.TryParse(ip,out a)||a.AddressFamily!=AddressFamily.InterNetwork)return false;var b=a.GetAddressBytes();return b[0]==10||(b[0]==172&&b[1]>=16&&b[1]<=31)||(b[0]==192&&b[1]==168)||(b[0]==169&&b[1]==254);}
+  /** True when the address belongs to this computer; prevents connecting the host to itself. */
+  public static bool IsLocal(string ip) {
+   IPAddress target;if(!IPAddress.TryParse(ip,out target)||target.AddressFamily!=AddressFamily.InterNetwork)return false;
+   if(IPAddress.IsLoopback(target))return true;
+   try{foreach(var nic in NetworkInterface.GetAllNetworkInterfaces()){if(nic.OperationalStatus!=OperationalStatus.Up)continue;foreach(var address in nic.GetIPProperties().UnicastAddresses)if(address.Address.Equals(target))return true;}}catch{}
+   return false;
+  }
   public static List<LanInterface> Read() {
    // Win32_NetworkAdapter.PhysicalAdapter incorrectly identifies some TUN drivers as physical.
    var hardware=new HashSet<int>();

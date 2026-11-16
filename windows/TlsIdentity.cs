@@ -15,6 +15,16 @@ namespace Ryadom {
  internal static class TlsIdentity {
   private static readonly SslProtocols Protocols=(SslProtocols)3072; // TLS 1.2 (enum value is missing in .NET 4.0 reference assemblies)
   public static string PinFile { get { return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Ryadom","tls-pins.txt"); } }
+  public sealed class PinMismatchException : IOException {
+   public string PinKey {get;private set;}
+   public PinMismatchException(string pinKey,string message):base(message){PinKey=pinKey;}
+  }
+  public static string FormatFingerprint(string fingerprint) {
+   if(string.IsNullOrEmpty(fingerprint))return "";
+   var text=new StringBuilder(fingerprint.Length+fingerprint.Length/4);
+   for(int i=0;i<fingerprint.Length;i++){if(i>0&&i%4==0)text.Append(' ');text.Append(char.ToUpperInvariant(fingerprint[i]));}
+   return text.ToString();
+  }
   public static string Fingerprint(X509Certificate2 certificate) {
    if(certificate==null)return "";
    using(var sha=SHA256.Create()){byte[] hash=sha.ComputeHash(certificate.RawData);var text=new StringBuilder(hash.Length*2);foreach(byte b in hash)text.Append(b.ToString("x2"));return text.ToString();}
@@ -61,8 +71,28 @@ namespace Ryadom {
      return true;
     }
     if(string.Equals(existing,fingerprint,StringComparison.OrdinalIgnoreCase))return true;
-    error="Сертификат главного устройства изменился. Если главное устройство переустанавливали, удалите файл "+pinFile+" и подключитесь заново.";
+    error="Сертификат главного устройства изменился. Сбросьте доверие для этого адреса и подключитесь заново, если главное устройство переустанавливали.";
     return false;
+   }
+  }
+  public static bool HasPin(string pinKey,string pinFile,out string fingerprint,out string error) {
+   lock(PinLock) { return TryReadPin(pinKey,pinFile,out fingerprint,out error)&&!string.IsNullOrEmpty(fingerprint); }
+  }
+  public static bool Remember(string pinKey,string fingerprint,string pinFile,out string error) {
+   lock(PinLock) { return TryWritePin(pinKey,fingerprint,pinFile,out error); }
+  }
+  public static bool Forget(string pinKey,string pinFile,out string error) {
+   error="";
+   lock(PinLock) {
+    try {
+     if(!File.Exists(pinFile))return true;
+     string encoded=Convert.ToBase64String(Encoding.UTF8.GetBytes(pinKey));
+     var lines=File.ReadAllLines(pinFile).Where(x=>{string[] p=x.Split('\t');return p.Length!=2||p[0]!=encoded;}).ToList();
+     string tmp=pinFile+".tmp-"+Guid.NewGuid().ToString("N");
+     File.WriteAllLines(tmp,lines,new UTF8Encoding(false));
+     try{if(File.Exists(pinFile))File.Replace(tmp,pinFile,null);else File.Move(tmp,pinFile);}catch{try{File.Delete(tmp);}catch{}throw;}
+     return true;
+    }catch(Exception e){error="Не удалось сбросить доверие в "+pinFile+": "+e.Message;return false;}
    }
   }
   private static bool TryReadPin(string key,string file,out string pin,out string error) {
@@ -91,13 +121,30 @@ namespace Ryadom {
    }catch(Exception e){error="Не удалось сохранить отпечаток в "+file+": "+e.Message;return false;}
   }
   // Probe used before joining: performs a TLS handshake and reads /api/health over TLS.
-  public static string Probe(LanInterface nic,string host,int port) {
+  // It never pins a certificate on first use: the caller must show the fingerprint and call Remember().
+  public static string Probe(LanInterface nic,string host,int port){string fingerprint;bool firstUse;return Probe(nic,host,port,out fingerprint,out firstUse);}
+  public static string Probe(LanInterface nic,string host,int port,out string fingerprint,out bool firstUse){return Probe(nic,host,port,out fingerprint,out firstUse,PinFile);}
+  public static string Probe(LanInterface nic,string host,int port,out string fingerprint,out bool firstUse,string pinFile) {
+   fingerprint="";firstUse=false;
    using(var client=LanInterfaces.Connect(nic,host,port)) {
     client.ReceiveTimeout=15000;client.SendTimeout=15000;
-    string pinError=null;
-    using(var ssl=new SslStream(client.GetStream(),false,(sender,certificate,chain,errors)=>{if(certificate==null)return false;var cert2=new X509Certificate2(certificate);bool ok=Validate(host+":"+port,cert2,PinFile,out pinError);return ok;})) {
+    string pinKey=host+":"+port,seen="",failure="";bool mismatch=false,firstSeen=false;
+    using(var ssl=new SslStream(client.GetStream(),false,(sender,certificate,chain,errors)=>{
+     if(certificate==null)return false;
+     var cert2=new X509Certificate2(certificate);
+     seen=Fingerprint(cert2);
+     string known;
+     if(!TryReadPin(pinKey,pinFile,out known,out failure))return false;
+     if(string.IsNullOrEmpty(known)){firstSeen=true;return true;}
+     if(string.Equals(known,seen,StringComparison.OrdinalIgnoreCase)){firstSeen=false;return true;}
+     failure="Сертификат главного устройства изменился. Сбросьте доверие для этого адреса и подключитесь заново, если главное устройство переустанавливали.";
+     mismatch=true;return false;
+    })) {
      try{ssl.AuthenticateAsClient(host,null,Protocols,false);}
-     catch(AuthenticationException){throw new IOException(pinError??"Главное устройство не поддерживает защищённое соединение. Обновите приложение Рядом на главном устройстве.");}
+     catch(AuthenticationException){
+      if(mismatch)throw new PinMismatchException(pinKey,failure);
+      throw new IOException(failure??"Главное устройство не поддерживает защищённое соединение. Обновите приложение Рядом на главном устройстве.");
+     }
      byte[] request=Encoding.ASCII.GetBytes("GET /api/health HTTP/1.1\r\nHost: "+host+":"+port+"\r\nConnection: close\r\n\r\n");
      ssl.Write(request,0,request.Length);ssl.Flush();
      var buffer=new byte[2048];int total=0,read;
@@ -105,6 +152,8 @@ namespace Ryadom {
      string text=Encoding.UTF8.GetString(buffer,0,total);
      if(!text.StartsWith("HTTP/1.1 200")&&!text.StartsWith("HTTP/1.0 200"))throw new IOException("Главное устройство не ответило по защищённому каналу.");
      if(!text.Contains("\"app\":\"ryadom\""))throw new IOException("По адресу отвечает не Рядом.");
+     fingerprint=seen;
+     firstUse=firstSeen;
      return text;
     }
    }

@@ -61,6 +61,15 @@ public final class TlsTest {
     if(!health.contains("\"app\":\"ryadom\""))throw new AssertionError("probe: "+health);
     if(!first.fingerprint.equals(probePins.get(key)))throw new AssertionError("probe must pin");
 
+    MemoryStore inspectPins=new MemoryStore();
+    Socket inspectPlain=new Socket();inspectPlain.connect(new InetSocketAddress("127.0.0.1",server.port()),3000);
+    TlsPin.Inspection inspection=TlsPin.inspect(inspectPlain,"127.0.0.1",server.port(),key,inspectPins);
+    if(!inspection.firstUse)throw new AssertionError("inspect must report first use");
+    if(!first.fingerprint.equals(inspection.fingerprint))throw new AssertionError("inspect fingerprint");
+    if(inspectPins.get(key)!=null)throw new AssertionError("inspect must not pin before confirmation");
+    inspectPins.put(key,inspection.fingerprint);
+    Socket confirmed=connect(server.port(),"127.0.0.1",key,inspectPins);confirmed.close();
+
     TlsIdentity second=TlsIdentity.ensure(new File(root,"second"));
     if(second.fingerprint.equals(first.fingerprint))throw new AssertionError("second identity must differ");
     Server other=new Server(second);

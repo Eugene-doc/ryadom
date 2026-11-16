@@ -21,6 +21,10 @@ final class TlsPin {
   PinMismatch(String address){super(CHANGED);this.address=address;}
   String address(){return address;}
  }
+ static final class Inspection {
+  final String health,fingerprint,key;final boolean firstUse;
+  Inspection(String health,String fingerprint,String key,boolean firstUse){this.health=health;this.fingerprint=fingerprint;this.key=key;this.firstUse=firstUse;}
+ }
  private TlsPin(){}
  static String address(String host,int port){return host+":"+port;}
  static String fingerprint(X509Certificate certificate) throws CertificateException {
@@ -33,7 +37,9 @@ final class TlsPin {
  }
  /** Wraps an already connected socket into a TLS 1.2 client socket and verifies the pinned fingerprint. */
  static Socket connect(Socket plain,String peerHost,String pinKey,Store store) throws IOException {
-  Pinner pinner=new Pinner(pinKey,store);
+  return connect(plain,peerHost,pinKey,store,new Pinner(pinKey,store,true));
+ }
+ private static Socket connect(Socket plain,String peerHost,String pinKey,Store store,Pinner pinner) throws IOException {
   try{
    SSLContext context=SSLContext.getInstance("TLSv1.2");
    context.init(null,new TrustManager[]{pinner},new SecureRandom());
@@ -53,19 +59,26 @@ final class TlsPin {
    throw new IOException("Не удалось установить защищённое соединение с главным устройством.",e);
   }
  }
+ /** Handshakes and reads health without pinning a new certificate; the UI must confirm it first. */
+ static Inspection inspect(Socket plain,String peerHost,int peerPort,String pinKey,Store store) throws IOException {
+  Pinner pinner=new Pinner(pinKey,store,false);
+  Socket socket=connect(plain,peerHost,pinKey,store,pinner);
+  try{return new Inspection(exchangeHealth(socket,peerHost,peerPort),pinner.seenFingerprint,pinKey,pinner.firstUse);}finally{try{socket.close();}catch(Exception ignored){}}
+ }
  /** Reads /api/health over TLS before joining so a wrong or changed certificate is reported early. */
  static String probe(Socket plain,String peerHost,int peerPort,String pinKey,Store store) throws IOException {
   Socket socket=connect(plain,peerHost,pinKey,store);
-  try{
-   socket.setSoTimeout(10000);
-   OutputStream out=socket.getOutputStream();
-   out.write(("GET /api/health HTTP/1.1\r\nHost: "+peerHost+":"+peerPort+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
-   out.flush();
-   String text=read(socket.getInputStream());
-   if(!text.startsWith("HTTP/1.1 200")&&!text.startsWith("HTTP/1.0 200"))throw new IOException("Главное устройство не ответило по защищённому каналу.");
-   if(!text.contains("\"app\":\"ryadom\""))throw new IOException("По адресу отвечает не Рядом.");
-   return text;
-  }finally{try{socket.close();}catch(Exception ignored){}}
+  try{return exchangeHealth(socket,peerHost,peerPort);}finally{try{socket.close();}catch(Exception ignored){}}
+ }
+ private static String exchangeHealth(Socket socket,String peerHost,int peerPort) throws IOException {
+  socket.setSoTimeout(10000);
+  OutputStream out=socket.getOutputStream();
+  out.write(("GET /api/health HTTP/1.1\r\nHost: "+peerHost+":"+peerPort+"\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1));
+  out.flush();
+  String text=read(socket.getInputStream());
+  if(!text.startsWith("HTTP/1.1 200")&&!text.startsWith("HTTP/1.0 200"))throw new IOException("Главное устройство не ответило по защищённому каналу.");
+  if(!text.contains("\"app\":\"ryadom\""))throw new IOException("По адресу отвечает не Рядом.");
+  return text;
  }
  private static String read(InputStream input) throws IOException {
   ByteArrayOutputStream buffer=new ByteArrayOutputStream();
@@ -87,15 +100,17 @@ final class TlsPin {
   return new String(buffer.toByteArray(),StandardCharsets.UTF_8);
  }
  private static final class Pinner implements X509TrustManager {
-  private final String pinKey;private final Store store;volatile PinMismatch failure;
-  Pinner(String pinKey,Store store){this.pinKey=pinKey;this.store=store;}
+  private final String pinKey;private final Store store;private final boolean remember;volatile PinMismatch failure;String seenFingerprint="";boolean firstUse;
+  Pinner(String pinKey,Store store){this(pinKey,store,true);}
+  Pinner(String pinKey,Store store,boolean remember){this.pinKey=pinKey;this.store=store;this.remember=remember;}
   public void checkClientTrusted(X509Certificate[] chain,String authType) throws CertificateException {throw new CertificateException("Только серверный сертификат");}
   public void checkServerTrusted(X509Certificate[] chain,String authType) throws CertificateException {
    if(chain==null||chain.length==0)throw new CertificateException("Главное устройство не предъявило сертификат");
    String seen;
    try{seen=fingerprint(chain[0]);}catch(CertificateException e){throw e;}
+   seenFingerprint=seen;
    String known=store.get(pinKey);
-   if(known==null||known.isEmpty()){store.put(pinKey,seen);return;}
+   if(known==null||known.isEmpty()){firstUse=true;if(remember)store.put(pinKey,seen);return;}
    if(known.equalsIgnoreCase(seen))return;
    failure=new PinMismatch(pinKey);
    throw new CertificateException(failure.getMessage());

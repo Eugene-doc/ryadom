@@ -8,7 +8,7 @@ const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const { DatabaseSync } = require('node:sqlite');
 const sea = require('node:sea');
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const PROTOCOL = 3;
 const MAX_FILE = 512 * 1024 * 1024;
 const PORT = Number(process.env.RYADOM_PORT || 4280);
@@ -126,7 +126,8 @@ function device(req) {
  return d;
 }
 function publicDevices() {
- return db.prepare('SELECT id,name,host,created FROM devices ORDER BY created').all().map(d => ({ ...d, host: !!d.host, online: [...clients.values()].some(c => c.deviceId === d.id) }));
+ const rows = db.prepare("SELECT d.id,d.name,d.host,d.created,(SELECT MAX(s.lastSeen) FROM sessions s WHERE s.deviceId=d.id) AS lastSeen FROM devices d ORDER BY d.created").all();
+ return rows.map(d => ({ ...d, host: !!d.host, online: [...clients.values()].some(c => c.deviceId === d.id) }));
 }
 function broadcast(type, value, hostOnly = false) {
  const data = `event: ${type}\ndata: ${JSON.stringify(value)}\n\n`;

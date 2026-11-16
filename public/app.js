@@ -46,6 +46,7 @@ function connectEvents(){
  events.addEventListener('pair_decided',()=>{if(me?.host)sync();});
  events.addEventListener('revoked',()=>{showJoin();toast('Доступ устройства отозван на главном устройстве');});
 }
+$('forget-offline').onclick=async()=>{const stale=devices.filter(d=>!d.host&&!d.online);if(!stale.length)return;if(!confirm(`Забыть ${stale.length} неактивных устройств? Для нового входа им снова понадобится код.`))return;try{for(const device of stale)await api(`/api/host/devices/${device.id}`,'DELETE');toast('Неактивные устройства забыты');await sync();}catch(e){toast(e.message);}};
 function renderConnection(){
  $('connection-dot').className=`status-dot ${online?'online':'offline'}`;
  const n=devices.filter(d=>d.online).length;
@@ -55,16 +56,18 @@ function renderConnection(){
 function deviceIcon(d){if(/android|телефон|iphone|pixel|galaxy/i.test(d.name))return 'phone';return d.host||/компьютер|ноутбук|pc|mac|desktop/i.test(d.name)?'monitor':'phone';}
 function renderDevices(){
  if(!me)return;const current=devices.find(d=>d.id===me.id);if(current)me.name=current.name;
- $('device-count').textContent=devices.length;$('settings-count').textContent=devices.length;
+ const ordered=[...devices].sort((a,b)=>(b.online?1:0)-(a.online?1:0)||String(b.lastSeen||'').localeCompare(String(a.lastSeen||''))||String(a.name).localeCompare(String(b.name),'ru'));
+ $('device-count').textContent=ordered.length;$('settings-count').textContent=ordered.length;
  $('profile-name').textContent=me.name;$('profile-initial').textContent=me.name.slice(0,1).toUpperCase();
  const list=$('device-list');const settings=$('settings-devices');list.replaceChildren();settings.replaceChildren();
- for(const d of devices){
-  const row=el('div','device-row');row.append(icon(deviceIcon(d)));const detail=el('div','device-detail');detail.append(el('strong','',d.name));const small=el('small');small.append(el('span',`small-dot ${d.online?'online':''}`),document.createTextNode(d.id===me.id?'Это устройство':d.online?'В сети':'Не в сети'));detail.append(small);row.append(detail);list.append(row);
-  const item=el('div','settings-device');item.append(icon(deviceIcon(d)));const info=el('div','device-detail');info.append(el('strong','',d.name),el('small','',`${d.host?'Главное устройство':d.online?'В сети':'Не в сети'}${d.id===me.id?' · Вы':''}`));item.append(info);
+ for(const d of ordered){
+  const row=el('div','device-row');row.append(icon(deviceIcon(d)));const detail=el('div','device-detail');detail.append(el('strong','',d.name));const small=el('small');small.append(el('span',`small-dot ${d.online?'online':''}`),document.createTextNode(deviceStatus(d)));detail.append(small);row.append(detail);list.append(row);
+  const item=el('div','settings-device');item.append(icon(deviceIcon(d)));const info=el('div','device-detail');info.append(el('strong','',d.name),el('small','',`${d.host?'Главное устройство':d.online?'В сети':'Не в сети'}${d.id===me.id?' · Вы':''}${d.lastSeen&&!d.online?' · '+new Date(d.lastSeen).toLocaleDateString('ru-RU',{day:'numeric',month:'short'}):''}`));item.append(info);
   if(me.host&&!d.host){const b=el('button','revoke','Отключить');b.type='button';b.onclick=async()=>{if(!confirm(`Отозвать доступ устройства «${d.name}»? Для нового входа понадобится код.`))return;try{await api(`/api/host/devices/${d.id}`,'DELETE');toast('Доступ отозван');await sync();}catch(e){toast(e.message);}};item.append(b);}settings.append(item);
  }
- $('sidebar-connect').hidden=!me.host;$('connect-button').hidden=!me.host;renderConnection();
+ $('sidebar-connect').hidden=!me.host;$('connect-button').hidden=!me.host;const stale=me.host?ordered.filter(d=>!d.host&&!d.online):[];$('forget-offline').hidden=!stale.length;$('forget-offline').textContent=`Забыть неактивные устройства (${stale.length})…`;renderConnection();
 }
+function deviceStatus(d){if(d.id===me?.id)return 'Это устройство';if(d.online)return 'В сети';return d.lastSeen?`Не в сети · ${new Date(d.lastSeen).toLocaleDateString('ru-RU',{day:'numeric',month:'short'})}`:'Не в сети';}
 function renderMessages(forceBottom=false){
  const area=$('scroll-area');const atBottom=area.scrollHeight-area.scrollTop-area.clientHeight<100;const all=[...messages.values()].sort((a,b)=>a.seq-b.seq);const query=$('search').value.trim().toLocaleLowerCase('ru');
  const shown=all.filter(m=>(filter!=='media'||m.file&&/^(image|video)\//.test(m.file.mime))&&(!query||`${m.text} ${m.file?.name||''} ${m.deviceName}`.toLocaleLowerCase('ru').includes(query)));
