@@ -1,10 +1,10 @@
-# Рядом 0.3.1
+# Рядом 0.3.2
 
 Личный мини-чат для Windows и Android. Обменивайтесь текстом, фото, видео и файлами между своими устройствами в одной домашней сети — без интернета и аккаунтов.
 
-**[Скачать для Windows](https://github.com/Eugene-doc/ryadom/releases/download/v0.3.1/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/Eugene-doc/ryadom/releases/download/v0.3.1/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/Eugene-doc/ryadom/releases/tag/v0.3.1)**
+**[Скачать для Windows](https://github.com/Eugene-doc/ryadom/releases/download/v0.3.2/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/Eugene-doc/ryadom/releases/download/v0.3.2/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/Eugene-doc/ryadom/releases/tag/v0.3.2)**
 
-**[Что нового в 0.3.1](docs/releases/0.3.1.md)** — исправлено подключение к самому себе, добавлена проверка сертификата при первом входе и порядок в списке устройств.
+**[Что нового в 0.3.2](docs/releases/0.3.2.md)** — диагностика и исправление входящих подключений Windows, сеть «Частная», ESET/Windows Firewall.
 
 ## Возможности
 
@@ -19,6 +19,7 @@
 - **Своё окно Windows** — WebView2 вместо Edge, правильная иконка, ярлык и панель задач, папка загрузок.
 - **Загрузки и версия** — кнопка открытия сохранённых файлов и показ версии при запуске.
 - **Проверка подключения** — собственный адрес исключается из поиска, а перед первым доверием показывается отпечаток сертификата главного.
+- **Диагностика сети** — отчёт о профиле сети, Windows Firewall и ESET; подсказка и действия для входящих TCP 4280 / UDP 42800.
 
 ## Быстрый запуск
 
@@ -41,7 +42,8 @@
 | [docs/GUIDE.md](docs/GUIDE.md) | Подробная инструкция: установка, Happ, сеть, хранение данных и сборка из исходников. |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Дорожная карта обновлений: срочная безопасность, средние и малозначительные правки, функции, инженерия. |
 | [docs/releases/](docs/releases/) | «Что нового» для каждого выпуска; правило и шаблон для будущих релизов. |
-| [docs/releases/0.3.1.md](docs/releases/0.3.1.md) | Подробные примечания к текущему выпуску 0.3.1. |
+| [docs/releases/0.3.2.md](docs/releases/0.3.2.md) | Подробные примечания к текущему выпуску 0.3.2. |
+| [docs/releases/0.3.1.md](docs/releases/0.3.1.md) | Примечания к предыдущему выпуску 0.3.1. |
 | [docs/releases/0.3.0.md](docs/releases/0.3.0.md) | Примечания к предыдущему выпуску 0.3.0. |
 | [docs/RELEASE-SIGNING.md](docs/RELEASE-SIGNING.md) | Подпись и проверка релизов; где хранятся ключи и как их не потерять. |
 | [SECURITY.md](SECURITY.md) | Политика безопасности, модель угроз и приватный канал сообщений об уязвимостях. |

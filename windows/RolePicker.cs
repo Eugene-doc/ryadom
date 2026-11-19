@@ -12,7 +12,7 @@ namespace Ryadom {
   public List<LanInterface> Networks;
   private readonly TextBox address=new TextBox();private readonly ListBox chats=new ListBox();private readonly Label status=new Label();private readonly Button search=new Button();
   public RolePicker(string previous) {
-   Text="Рядом 0.3.1 · выбор главного устройства";ClientSize=new Size(525,550);MinimumSize=new Size(540,580);StartPosition=FormStartPosition.CenterScreen;BackColor=Color.FromArgb(245,248,242);Font=new Font("Segoe UI",10);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=false;
+   Text="Рядом 0.3.2 · выбор главного устройства";ClientSize=new Size(525,550);MinimumSize=new Size(540,580);StartPosition=FormStartPosition.CenterScreen;BackColor=Color.FromArgb(245,248,242);Font=new Font("Segoe UI",10);FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=false;
    var title=new Label{Text="Кто сегодня главный?",Font=new Font("Segoe UI",23),ForeColor=Color.FromArgb(35,76,49),Bounds=new Rectangle(30,25,465,45)};Controls.Add(title);
    Controls.Add(new Label{Text="Создайте чат на этом устройстве или выберите уже запущенный.\nПровод и Wi-Fi подходят: нужен один домашний роутер.",Bounds=new Rectangle(32,80,465,50),ForeColor=Color.FromArgb(100,121,91)});
    var create=new Button{Text="Создать чат на этом компьютере",Bounds=new Rectangle(32,145,460,48),BackColor=Color.FromArgb(23,107,86),ForeColor=Color.White,FlatStyle=FlatStyle.Flat};Controls.Add(create);
@@ -41,7 +41,7 @@ namespace Ryadom {
      if(reset==DialogResult.Yes){string error;if(!TlsIdentity.Forget(mismatch.PinKey,TlsIdentity.PinFile,out error))throw new Exception(error);status.Text="Доверие сброшено. Подключитесь снова и проверьте отпечаток сертификата.";}
      return;
     }
-    catch(Exception tls){throw new Exception("Нет защищённого соединения с главным устройством: "+tls.Message);}
+    catch(Exception tls){throw new Exception("Нет защищённого соединения с главным устройством: "+tls.Message+". Проверьте входящие TCP 4280 / UDP 42800 на главном, профиль сети «Частная» и правила ESET/Happ.");}
     if(firstUse){
      string confirm="Впервые подключаетесь к "+uri.Host+":"+port+".\n\nОтпечаток сертификата:\n"+TlsIdentity.FormatFingerprint(fingerprint)+"\n\nСверьте отпечаток на главном устройстве: Настройки → Безопасность. Доверять этому устройству?";
      if(MessageBox.Show(this,confirm,"Проверка сертификата",MessageBoxButtons.YesNo,MessageBoxIcon.Question)!=DialogResult.Yes){status.Text="Подключение отменено: сертификат не подтверждён.";return;}

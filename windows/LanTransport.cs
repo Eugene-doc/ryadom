@@ -31,7 +31,9 @@ namespace Ryadom {
   public static bool IsLocal(string ip) {
    IPAddress target;if(!IPAddress.TryParse(ip,out target)||target.AddressFamily!=AddressFamily.InterNetwork)return false;
    if(IPAddress.IsLoopback(target))return true;
+   try{foreach(var address in Dns.GetHostAddresses(Dns.GetHostName()))if(address.Equals(target))return true;}catch{}
    try{foreach(var nic in NetworkInterface.GetAllNetworkInterfaces()){if(nic.OperationalStatus!=OperationalStatus.Up)continue;foreach(var address in nic.GetIPProperties().UnicastAddresses)if(address.Address.Equals(target))return true;}}catch{}
+   try{foreach(var nic in Read())if(string.Equals(nic.Address,ip,StringComparison.Ordinal))return true;}catch{}
    return false;
   }
   public static List<LanInterface> Read() {

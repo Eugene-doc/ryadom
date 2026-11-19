@@ -92,5 +92,8 @@ class TransportTest {
   rule["profile"]="Public";
   if(FirewallAdvisor.ValidateRule(rules,"Ryadom chat TCP 4280","TCP",4280,"C:\\app.exe",ruleProblems))throw new Exception("Public firewall profile was accepted");
   Console.WriteLine("Firewall rule parser: PASS");
+  var firewall=FirewallAdvisor.Inspect();
+  if(string.IsNullOrEmpty(firewall.LocalAddresses)||string.IsNullOrEmpty(firewall.NetworkDetails)||string.IsNullOrEmpty(firewall.WindowsDetails))throw new Exception("Firewall report fields are empty");
+  Console.WriteLine("Firewall/network report: PASS ("+firewall.NetworkDetails+"; "+firewall.WindowsDetails+")");
  }
 }
