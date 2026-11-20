@@ -27,7 +27,7 @@ function applyState(data,generation=stateGeneration){
  if(reset){messages.clear();canLoadOlder=false;stateGeneration++;}
  $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;$('header-clear-chat-button').hidden=!me.host;
  $('app-version').textContent=`Приложение ${(typeof window.ryadom?.appVersion==='function'?window.ryadom.appVersion():window.ryadom?.appVersion)||'—'} · главное ${data.server.version||'—'}`;
- renderDevices();renderMessages();renderPending();updateButtons();
+ renderDevices();renderMessages();renderPending();updateButtons();saveTrustRoster();
 }
 async function sync(){
  if(syncing||!me)return;syncing=true;const generation=stateGeneration;
