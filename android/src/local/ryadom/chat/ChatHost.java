@@ -333,6 +333,8 @@ final class ChatHost implements AutoCloseable {
   });
   File[] local=files.listFiles();boolean pending=false;if(local!=null)for(File file:local)try{if(!file.delete()&&file.exists())pending=true;}catch(Exception ignored){pending=true;}
   if(pending)throw new IOException("Не удалось удалить остатки предыдущей истории. Закройте файлы Рядом и запустите снова.");
+  File marker=new File(directory,"runtime.json");
+  try(FileOutputStream out=new FileOutputStream(marker)){out.write(new JSONObject().put("state","ACTIVE").put("sessionId",sessionId).put("term",term[0]).put("hostDeviceId",hostId.isEmpty()?host.getString("id"):hostId).toString().getBytes(StandardCharsets.UTF_8));out.getFD().sync();}
  }
  private synchronized void endEphemeralSession() {
   if(sessionEnding)return;sessionEnding=true;
@@ -340,6 +342,7 @@ final class ChatHost implements AutoCloseable {
   for(MiniHttp.Request pending:new ArrayList<>(uploadRequests.values()))try{pending.close();}catch(Exception ignored){}
   try{change(next->{next.put("messages",new JSONArray()).put("files",new JSONArray()).put("operations",new JSONArray());JSONObject chat=next.getJSONObject("chat");chat.put("revision",0).put("deletionRevision",0).put("epoch",0);});}catch(Exception ignored){}
   File[] local=files.listFiles();if(local!=null)for(File file:local)try{file.delete();}catch(Exception ignored){}
+  try{new File(directory,"runtime.json").delete();}catch(Exception ignored){}
  }
  private static JSONObject operationResponse(JSONObject operation) throws Exception {
   JSONObject response=new JSONObject(operation.toString()).put("operationId",operation.optString("id"));JSONObject result=operation.optJSONObject("result");

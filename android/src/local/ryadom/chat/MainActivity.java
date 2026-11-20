@@ -179,6 +179,7 @@ public final class MainActivity extends Activity {
     Socket plain=network.connect(host,port);
     TlsPin.Inspection inspection;
     try{inspection=TlsTrust.inspect(plain,host,port,prefs);}finally{try{plain.close();}catch(Exception ignored){}}
+    if(!selectedHostFingerprint.isEmpty()&&!selectedHostFingerprint.equalsIgnoreCase(inspection.fingerprint))throw new IOException("Отпечаток найденного главного не совпал с сертификатом. Возможно, адрес занял другой компьютер.");
     if(inspection.firstUse){
      final CountDownLatch decided=new CountDownLatch(1);final boolean[] trusted={false};
      final TlsPin.Inspection seen=inspection;
