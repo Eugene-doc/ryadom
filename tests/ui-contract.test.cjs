@@ -29,6 +29,8 @@ test('0.3.0 UI exposes deletion, clear, downloads and version controls', () => {
  assert.match(js, /deletionRevision/);
  assert.match(js, /clearOperationId/);
  assert.match(js, /openDownloads/);
+ assert.match(js, /nativeAuth/);
+ assert.match(js, /deviceToken/);
  assert.match(js, /forget-offline/);
  assert.match(html, /История и главное устройство/);
  assert.match(html, /Забыть неактивные устройства/);

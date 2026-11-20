@@ -65,6 +65,7 @@ public final class MainActivity extends Activity {
  private TextView errorText;
  private Button connectButton;
  private SharedPreferences prefs;
+ private DeviceIdentity identity;
  private String base="", downloadUrl="", downloadCookie="", downloadName="", selectedHostId="", selectedHostFingerprint="";
  private DirectProxy proxy;
  private boolean hosting=false;
@@ -74,6 +75,8 @@ public final class MainActivity extends Activity {
 
  private final class Bridge {
   @JavascriptInterface public String appVersion(){return ChatHost.VERSION;}
+  @JavascriptInterface public String deviceId(){return identity==null?"":identity.id;}
+  @JavascriptInterface public String deviceToken(){return identity==null?"":identity.token;}
   @JavascriptInterface public void openDownloads(){runOnUiThread(MainActivity.this::showDownloads);}
  }
  private void rememberDownload(Uri uri,String name){
@@ -101,6 +104,7 @@ public final class MainActivity extends Activity {
  @Override public void onCreate(Bundle state) {
   super.onCreate(state);
   prefs=getSharedPreferences("ryadom",MODE_PRIVATE);
+  identity=DeviceIdentity.load(this);
   getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
   getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
   root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(BG);

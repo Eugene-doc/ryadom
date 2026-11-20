@@ -356,10 +356,19 @@ final class ChatHost implements AutoCloseable {
    String raw=newSession(device);
    sessionReply(request,200,raw,new JSONObject().put("ok",true).put("device",new JSONObject().put("id",device.getString("id")).put("name",device.getString("name")).put("host",true)));return;
   }
+  if(route.equals("/api/auth")&&request.method.equals("POST")){
+   JSONObject body=body(request);
+   String requestedId=body.optString("deviceId","").toLowerCase(Locale.ROOT),requestedToken=body.optString("deviceToken","").toLowerCase(Locale.ROOT);
+   if(!requestedId.matches("d1-[0-9a-f]{32}")||!requestedToken.matches("[0-9a-f]{64}"))throw new MiniHttp.Failure(400,"Некорректная идентичность устройства");
+   JSONObject device;String raw;
+   synchronized(this){device=find(state.getJSONArray("devices"),"id",requestedId);if(device==null||device.optBoolean("host")||!safeEqual(device.optString("token"),hash(requestedToken)))throw new MiniHttp.Failure(401,"Устройство не remembered. Подключитесь по коду");raw=newSession(device);}
+   logEvent("device_auth",device.getString("name"),remote);
+   sessionReply(request,200,raw,new JSONObject().put("ok",true).put("device",new JSONObject().put("id",device.getString("id")).put("name",device.getString("name")).put("host",false)));return;
+  }
   if(route.equals("/api/pair")&&request.method.equals("POST")){
    synchronized(this){long[] attempt=attempts.get(remote);long nowMs=System.currentTimeMillis();if(attempt==null||attempt[1]<nowMs){attempt=new long[]{0,nowMs+60000};attempts.put(remote,attempt);}if(++attempt[0]>pairAttempts)throw new MiniHttp.Failure(429,"Слишком много попыток. Подождите минуту");}
    JSONObject body=body(request);
-   final String requestId;final String deviceName;
+   final String requestId;final String deviceName,finalDeviceId,finalTokenHash;
    synchronized(this){
     prunePairs();
     if(pairingDisabled())throw new MiniHttp.Failure(403,"Код истёк. Создайте новый код на главном устройстве");
@@ -367,10 +376,19 @@ final class ChatHost implements AutoCloseable {
     String name=body.optString("name","").trim();
     if(name.isEmpty())throw new MiniHttp.Failure(400,"Укажите имя устройства");
     name=cleanName(name);name=name.substring(0,Math.min(name.length(),40));
+    String requestedId=body.optString("deviceId","").toLowerCase(Locale.ROOT),requestedToken=body.optString("deviceToken","").toLowerCase(Locale.ROOT);
+    if(!requestedId.isEmpty()||!requestedToken.isEmpty()){
+     if(!requestedId.matches("d1-[0-9a-f]{32}")||!requestedToken.matches("[0-9a-f]{64}"))throw new MiniHttp.Failure(400,"Некорректная идентичность устройства");
+     JSONObject existing=find(state.getJSONArray("devices"),"id",requestedId);
+     if(existing!=null&&(existing.optBoolean("host")||!safeEqual(existing.optString("token"),hash(requestedToken))))throw new MiniHttp.Failure(409,"Идентичность устройства не совпадает");
+     finalDeviceId=requestedId;finalTokenHash=hash(requestedToken);
+    }else{finalDeviceId=null;finalTokenHash=null;}
     if(pendingList().length()>=maxPending)throw new MiniHttp.Failure(429,"Слишком много запросов на подключение. Подождите");
     newCode(true);
     requestId=token(16);deviceName=name;
-    pending.put(requestId,new JSONObject().put("requestId",requestId).put("name",deviceName).put("ip",remote).put("created",now()).put("expires",System.currentTimeMillis()+pairTtl).put("status","pending"));
+    JSONObject pendingRequest=new JSONObject().put("requestId",requestId).put("name",deviceName).put("ip",remote).put("created",now()).put("expires",System.currentTimeMillis()+pairTtl).put("status","pending");
+    if(finalDeviceId!=null)pendingRequest.put("deviceId",finalDeviceId).put("tokenHash",finalTokenHash);
+    pending.put(requestId,pendingRequest);
    }
    broadcast("pairing",pairing(),true);
    logEvent("pair_request",deviceName,remote);
@@ -545,8 +563,13 @@ final class ChatHost implements AutoCloseable {
     synchronized(this){
      prunePairs();pendingRequest=pending.get(body.optString("requestId",""));
      if(pendingRequest==null||!pendingRequest.optString("status").equals("pending"))throw new MiniHttp.Failure(404,"Запрос не найден или устарел");
-     created=new JSONObject().put("id",UUID.randomUUID().toString()).put("name",pendingRequest.optString("name")).put("host",false).put("created",now());
-     change(next->next.getJSONArray("devices").put(created));
+     String approvedId=pendingRequest.optString("deviceId",""),approvedToken=pendingRequest.optString("tokenHash","");
+     if(approvedId.isEmpty())approvedId=UUID.randomUUID().toString();
+     created=new JSONObject().put("id",approvedId).put("name",pendingRequest.optString("name")).put("host",false).put("created",now());
+     if(!approvedToken.isEmpty())created.put("token",approvedToken);
+     JSONObject prior=find(state.getJSONArray("devices"),"id",approvedId);
+     if(prior!=null)change(next->{JSONObject current=find(next.getJSONArray("devices"),"id",created.getString("id"));if(current!=null)current.put("name",created.getString("name"));});
+     else change(next->next.getJSONArray("devices").put(created));
      pendingRequest.put("status","approved").put("deviceId",created.getString("id")).put("approved",now());
      pendingRequest.put("raw",newSession(created));
     }

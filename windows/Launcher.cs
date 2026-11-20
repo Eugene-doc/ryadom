@@ -118,7 +118,7 @@ namespace Ryadom {
    bool hosting=File.Exists(Path.Combine(Data,"desktop-role"))&&File.ReadAllText(Path.Combine(Data,"desktop-role"))=="host";string url=BaseUrl+(connect?"?connect=1":"");
    if(hosting)try{url+="#t="+RequestHostToken();}catch(Exception e){try{File.AppendAllText(Path.Combine(Data,"network.log"),DateTime.Now+" host-token "+e.Message+Environment.NewLine);}catch{}}
    try{
-    if(window==null||window.IsDisposed){window=new ChatWindow(url,e=>{try{if(window!=null){window.CloseForExit();window.Dispose();}}catch{}window=null;OpenBrowser(url);MessageBox.Show("Не удалось запустить WebView2: "+e.Message+"\n\nОткрыт запасной вариант в браузере. Установите Microsoft Edge WebView2 Runtime.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Warning);});window.Show();}
+    if(window==null||window.IsDisposed){window=new ChatWindow(url,e=>{try{if(window!=null){window.CloseForExit();window.Dispose();}}catch{}window=null;OpenBrowser(url);MessageBox.Show("Не удалось запустить WebView2: "+e.Message+"\n\nОткрыт запасной вариант в браузере. Установите Microsoft Edge WebView2 Runtime.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Warning);},Device.Id,Device.Token);window.Show();}
     else{window.Navigate(url);window.Show();}
    }catch(Exception e){
     OpenBrowser(url);

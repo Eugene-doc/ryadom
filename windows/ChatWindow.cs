@@ -47,12 +47,16 @@ namespace Ryadom {
   private readonly Label version = new Label();
   private readonly string downloads = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "Рядом");
   private readonly Action<Exception> failure;
+  private readonly string deviceId, deviceToken;
   private string pendingUrl;
   private bool allowClose, failed;
   private volatile bool scriptsReady;
-  public ChatWindow(string url) : this(url, null) { }
-  public ChatWindow(string url, Action<Exception> onFailure) {
+  public ChatWindow(string url) : this(url, null, "", "") { }
+  public ChatWindow(string url, Action<Exception> onFailure) : this(url, onFailure, "", "") { }
+  public ChatWindow(string url, Action<Exception> onFailure, string deviceId, string deviceToken) {
    failure = onFailure;
+   this.deviceId = deviceId ?? "";
+   this.deviceToken = deviceToken ?? "";
    WebView2Bootstrap.Prepare();
    try { if (string.IsNullOrEmpty(CoreWebView2Environment.GetAvailableBrowserVersionString())) throw new InvalidOperationException("WebView2 Runtime не установлен"); }
    catch (Exception e) { throw new InvalidOperationException("Для окна Рядом нужен Microsoft Edge WebView2 Runtime. Установите его и повторите запуск.", e); }
@@ -100,7 +104,7 @@ namespace Ryadom {
      do { path = Path.Combine(downloads, DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + name); } while (File.Exists(path) || File.Exists(path + ".crdownload"));
      b.ResultFilePath = path; b.Handled = true; lastDownload = path;
     };
-    core.AddScriptToExecuteOnDocumentCreatedAsync("window.ryadom={appVersion:'" + VersionText().Replace("'", "\\'") + "',openDownloads:function(){window.chrome.webview.postMessage('openDownloads');}};").ContinueWith(task => {
+    core.AddScriptToExecuteOnDocumentCreatedAsync("window.ryadom={appVersion:'" + VersionText().Replace("'", "\\'") + "',deviceId:'" + deviceId.Replace("'", "\\'") + "',deviceToken:'" + deviceToken.Replace("'", "\\'") + "',openDownloads:function(){window.chrome.webview.postMessage('openDownloads');}};").ContinueWith(task => {
      if (task.IsFaulted) { Fail(task.Exception); return; }
      scriptsReady = true;
      if (string.IsNullOrEmpty(pendingUrl)) return;
