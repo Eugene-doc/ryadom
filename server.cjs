@@ -38,7 +38,8 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, detail TEXT, ip TEXT, created TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, ownerDeviceId TEXT, created TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, deletionRevision INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, type TEXT NOT NULL, chatId TEXT NOT NULL, actorId TEXT, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, result TEXT, error TEXT);
- CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS revoked_devices (id TEXT PRIMARY KEY, revokedAt TEXT NOT NULL);`);
 function columnExists(table, column) { try { return db.prepare(`PRAGMA table_info(${table})`).all().some(x => x.name === column); } catch { return true; } }
 if (!columnExists('files', 'deviceId')) { try { db.exec('ALTER TABLE files ADD COLUMN deviceId TEXT'); } catch {} }
 if (!columnExists('messages', 'chatId')) { try { db.exec("ALTER TABLE messages ADD COLUMN chatId TEXT NOT NULL DEFAULT 'legacy'"); } catch {} }
@@ -67,9 +68,16 @@ function importTrustRoster() {
   const file = path.join(DATA, 'trust-roster.json');
   if (!fs.existsSync(file)) return;
   const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  for (const id of Array.isArray(value.revoked) ? value.revoked : []) {
+   if (!/^d1-[0-9a-f]{32}$/.test(String(id || ''))) continue;
+   db.prepare('INSERT OR IGNORE INTO revoked_devices (id,revokedAt) VALUES (?,?)').run(id, now());
+   db.prepare('DELETE FROM devices WHERE id=? AND host=0').run(id);
+   db.prepare('DELETE FROM sessions WHERE deviceId=?').run(id);
+  }
   if (typeof value.groupId === 'string' && /^[0-9a-f]{32}$/.test(value.groupId)) setMeta('group_id', value.groupId);
-  for (const device of Array.isArray(value.devices) ? value.devices : []) {
+   for (const device of Array.isArray(value.devices) ? value.devices : []) {
    if (!device || !/^d1-[0-9a-f]{32}$/.test(String(device.id || '')) || !/^[0-9a-f]{64}$/.test(String(device.tokenHash || ''))) continue;
+   if (db.prepare('SELECT id FROM revoked_devices WHERE id=?').get(device.id)) continue;
    if (db.prepare('SELECT id FROM devices WHERE id=?').get(device.id)) continue;
    db.prepare('INSERT INTO devices (id,name,token,host,created) VALUES (?,?,?,0,?)').run(device.id, cleanName(device.name).slice(0, 40), device.tokenHash, now());
   }
@@ -399,6 +407,7 @@ const server = http.createServer(async (req, res) => {
    let tokenHash = null;
    if (deviceId || token) {
     if (!/^d1-[0-9a-f]{32}$/.test(deviceId) || !/^[0-9a-f]{64}$/.test(token)) throw error(400, 'Некорректная идентичность устройства');
+    if (db.prepare('SELECT id FROM revoked_devices WHERE id=?').get(deviceId)) throw error(403, 'Устройство отозвано на главном');
     const existing = db.prepare('SELECT * FROM devices WHERE id=?').get(deviceId);
     if (existing && (existing.host || !safeEqual(existing.token, sha(token)))) throw error(409, 'Идентичность устройства не совпадает');
     tokenHash = sha(token);
@@ -428,7 +437,8 @@ const server = http.createServer(async (req, res) => {
   if (sessionEnding && req.method !== 'GET' && route !== '/api/host/stop' && route !== '/api/logout') throw error(409, 'Чат завершается. Дождитесь остановки');
   if (route === '/api/trust/roster' && req.method === 'GET') {
    const devices = db.prepare('SELECT id,name,token,created FROM devices WHERE host=0 ORDER BY created').all().map(x => ({ id: x.id, name: x.name, tokenHash: x.token, created: x.created }));
-   return send(res, 200, { groupId: metaValue('group_id'), devices });
+   const revoked = db.prepare('SELECT id FROM revoked_devices ORDER BY revokedAt').all().map(x => x.id);
+   return send(res, 200, { groupId: metaValue('group_id'), devices, revoked });
   }
   if (route === '/api/state' && req.method === 'GET') {
    const chat = chatRow();
@@ -645,6 +655,7 @@ const server = http.createServer(async (req, res) => {
    if (route.startsWith('/api/host/devices/') && req.method === 'DELETE') {
     const id = route.slice('/api/host/devices/'.length);
     db.prepare('DELETE FROM devices WHERE id=? AND host=0').run(id);
+    db.prepare('INSERT OR IGNORE INTO revoked_devices (id,revokedAt) VALUES (?,?)').run(id, now());
     db.prepare('DELETE FROM sessions WHERE deviceId=?').run(id);
     logEvent('device_revoked', id, address(peer));
     closeClients(c => c.deviceId === id, 'revoked'); return send(res, 200, { ok: true });

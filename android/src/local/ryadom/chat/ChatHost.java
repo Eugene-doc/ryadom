@@ -66,6 +66,7 @@ final class ChatHost implements AutoCloseable {
   if(!state.has("sessions"))state.put("sessions",new JSONArray());
   if(!state.has("events"))state.put("events",new JSONArray());
   if(!state.has("operations"))state.put("operations",new JSONArray());
+  if(!state.has("revoked"))state.put("revoked",new JSONArray());
   if(!state.has("seq"))state.put("seq",0);
   if(fresh){
    state.put("schema",3);
@@ -308,13 +309,15 @@ final class ChatHost implements AutoCloseable {
   try{
    JSONObject value=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
    String groupId=value.optString("groupId","");if(groupId.matches("[0-9a-f]{32}"))state.put("group_id",groupId);
-   JSONArray incoming=value.optJSONArray("devices");if(incoming==null)return;
+   JSONArray revoked=value.optJSONArray("revoked");JSONArray incoming=value.optJSONArray("devices");if(incoming==null)return;
    change(next->{
     JSONArray devices=next.getJSONArray("devices");
+    JSONArray revokedState=next.getJSONArray("revoked");
+    if(revoked!=null)for(int i=0;i<revoked.length();i++){String id=revoked.optString(i,"");if(!id.matches("d1-[0-9a-f]{32}"))continue;if(find(revokedState,"id",id)==null)revokedState.put(new JSONObject().put("id",id));remove(devices,"id",id);remove(next.getJSONArray("sessions"),"deviceId",id);}
     for(int i=0;i<incoming.length();i++){
      JSONObject source=incoming.getJSONObject(i);String id=source.optString("id","").toLowerCase(Locale.ROOT),token=source.optString("tokenHash","").toLowerCase(Locale.ROOT);
-     if(!id.matches("d1-[0-9a-f]{32}")||!token.matches("[0-9a-f]{64}")||id.equals(hostId)||find(devices,"id",id)!=null)continue;
-     devices.put(new JSONObject().put("id",id).put("name",cleanName(source.optString("name","Устройство")).substring(0,Math.min(cleanName(source.optString("name","Устройство")).length(),40))).put("token",token).put("host",false).put("created",now()));
+     if(!id.matches("d1-[0-9a-f]{32}")||!token.matches("[0-9a-f]{64}")||id.equals(hostId)||find(revokedState,"id",id)!=null||find(devices,"id",id)!=null)continue;
+     String name=cleanName(source.optString("name","Устройство"));devices.put(new JSONObject().put("id",id).put("name",name.substring(0,Math.min(name.length(),40))).put("token",token).put("host",false).put("created",now()));
     }
    });
   }catch(Exception ignored){}
@@ -409,6 +412,7 @@ final class ChatHost implements AutoCloseable {
     if(!requestedId.isEmpty()||!requestedToken.isEmpty()){
      if(!requestedId.matches("d1-[0-9a-f]{32}")||!requestedToken.matches("[0-9a-f]{64}"))throw new MiniHttp.Failure(400,"Некорректная идентичность устройства");
      JSONObject existing=find(state.getJSONArray("devices"),"id",requestedId);
+     if(find(state.getJSONArray("revoked"),"id",requestedId)!=null)throw new MiniHttp.Failure(403,"Устройство отозвано на главном");
      if(existing!=null&&(existing.optBoolean("host")||!safeEqual(existing.optString("token"),hash(requestedToken))))throw new MiniHttp.Failure(409,"Идентичность устройства не совпадает");
      finalDeviceId=requestedId;finalTokenHash=hash(requestedToken);
     }else{finalDeviceId=null;finalTokenHash=null;}
@@ -441,6 +445,11 @@ final class ChatHost implements AutoCloseable {
   Auth auth=auth(request);if(auth==null)throw new MiniHttp.Failure(401,"Подключите устройство по коду");
   JSONObject device=auth.device;String deviceId=device.getString("id");
   if(sessionEnding&&!request.method.equals("GET")&&!route.equals("/api/host/stop")&&!route.equals("/api/logout"))throw new MiniHttp.Failure(409,"Чат завершается. Дождитесь остановки");
+  if(route.equals("/api/trust/roster")&&request.method.equals("GET")){
+   JSONObject result;
+   synchronized(this){JSONArray devices=new JSONArray(),revoked=new JSONArray();JSONArray all=state.getJSONArray("devices");for(int i=0;i<all.length();i++){JSONObject entry=all.getJSONObject(i);if(entry.optBoolean("host"))continue;devices.put(new JSONObject().put("id",entry.optString("id")).put("name",entry.optString("name")).put("tokenHash",entry.optString("token")).put("created",entry.optString("created")));}JSONArray revokedState=state.getJSONArray("revoked");for(int i=0;i<revokedState.length();i++)revoked.put(revokedState.getJSONObject(i).optString("id"));result=new JSONObject().put("groupId",state.optString("group_id")).put("devices",devices).put("revoked",revoked);}
+   request.json(200,result.toString());return;
+  }
   if(route.equals("/api/state")&&request.method.equals("GET")){
    JSONObject result;
    synchronized(this){
@@ -632,7 +641,7 @@ final class ChatHost implements AutoCloseable {
    }
    if(route.startsWith("/api/host/devices/")&&request.method.equals("DELETE")){
     final String id=route.substring("/api/host/devices/".length());
-    synchronized(this){change(next->{JSONArray devices=next.getJSONArray("devices");JSONObject target=find(devices,"id",id);if(target!=null&&!target.optBoolean("host")){remove(devices,"id",id);remove(next.getJSONArray("sessions"),"deviceId",id);}});}
+    synchronized(this){change(next->{JSONArray devices=next.getJSONArray("devices");JSONObject target=find(devices,"id",id);if(target!=null&&!target.optBoolean("host")){remove(devices,"id",id);remove(next.getJSONArray("sessions"),"deviceId",id);JSONArray revoked=next.getJSONArray("revoked");if(find(revoked,"id",id)==null)revoked.put(new JSONObject().put("id",id));}});}
     closeStreams(null,id,"revoked");
     logEvent("device_revoked",id,remote);
     devicesChanged();request.json(200,"{\"ok\":true}");return;
