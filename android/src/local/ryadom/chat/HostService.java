@@ -27,7 +27,7 @@ public final class HostService extends Service {
    wake=((PowerManager)getSystemService(POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"Ryadom:host");wake.acquire();
    host=new ChatHost(new File(getFilesDir(),"host"),network.ips(),4280,name->{try(InputStream in=getAssets().open(name);ByteArrayOutputStream out=new ByteArrayOutputStream()){MiniHttp.copy(in,out,-1);return out.toByteArray();}},()->new Handler(getMainLooper()).post(this::stopSelf),DeviceIdentity.load(this).id);
    List<Integer> prefixes=new ArrayList<>();for(LinkAddress address:network.addresses)prefixes.add(address.getPrefixLength());
-   try{discovery=new Discovery(network.ips(),prefixes,Build.MODEL,network.network::bindSocket);}catch(Exception ignored){}
+   try{discovery=new Discovery(network.ips(),prefixes,Build.MODEL,network.network::bindSocket,DeviceIdentity.load(this).id,host.tlsFingerprint());}catch(Exception ignored){}
    callback=new ConnectivityManager.NetworkCallback(){@Override public void onLost(Network lost){if(lost.equals(network.network)){lastError="Домашняя сеть отключилась. Запустите чат заново после подключения к Wi-Fi.";new Handler(getMainLooper()).post(()->stopSelf());}}};
    network.manager.registerNetworkCallback(new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(),callback);
   }catch(Exception e){String message=e.getMessage()==null?"Не удалось запустить чат":e.getMessage();if(LanNetwork.vpnActive(this))message+=" Активен Happ/VPN: Android не позволяет принудительно обойти чужой VPN. В Happ включите маршрут локальной сети напрямую (Direct) или добавьте «Рядом» в исключения.";lastError=message;stopSelf();}

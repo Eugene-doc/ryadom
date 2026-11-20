@@ -154,23 +154,24 @@ namespace Ryadom {
   public void Dispose(){disposed=true;listener.Stop();lock(sockets){foreach(var s in sockets)s.Close();sockets.Clear();byIp.Clear();}}
  }
  internal sealed class FoundChat {
-  public string Name,Address;public int Port;
+  public string Name,Address,HostId,TlsFingerprint;public int Port;
   public override string ToString(){return Name+" — "+Address+":"+Port;}
  }
  internal sealed class LanDiscovery : IDisposable {
   public const int Port=42800;
   private UdpClient socket;private readonly List<UdpClient> senders=new List<UdpClient>();private volatile bool stopped;
-  private readonly List<LanInterface> interfaces;private readonly string name;
-  public LanDiscovery(List<LanInterface> nics,string deviceName) {
-   interfaces=nics;name=Convert.ToBase64String(Encoding.UTF8.GetBytes(deviceName));
+  private readonly List<LanInterface> interfaces;private readonly string name,hostId,tlsFingerprint;
+  public LanDiscovery(List<LanInterface> nics,string deviceName) : this(nics,deviceName,"",""){}
+  public LanDiscovery(List<LanInterface> nics,string deviceName,string hostDeviceId,string tlsFingerprint) {
+   interfaces=nics;name=Convert.ToBase64String(Encoding.UTF8.GetBytes(deviceName));hostId=hostDeviceId??"";this.tlsFingerprint=tlsFingerprint??"";
    socket=new UdpClient(AddressFamily.InterNetwork);socket.Client.SetSocketOption(SocketOptionLevel.Socket,SocketOptionName.ReuseAddress,true);socket.Client.Bind(new IPEndPoint(IPAddress.Any,Port));
-   foreach(var nic in nics){try{socket.JoinMulticastGroup(IPAddress.Parse("239.255.42.80"),IPAddress.Parse(nic.Address));}catch{}}
+   foreach(var nic in nics){try{socket.JoinMulticastGroup(IPAddress.Parse("239.255.42.80"),IPAddress.Parse(nic.Address));}catch{}} 
    Task.Run((Action)Listen);
   }
-  private void Listen(){while(!stopped){try{IPEndPoint peer=new IPEndPoint(IPAddress.Any,0);byte[] bytes=socket.Receive(ref peer);string request=Encoding.ASCII.GetString(bytes);if(!request.StartsWith("RYADOM_FIND_V1\t")||request.Length>100)continue;string nonce=request.Substring(15);if(nonce.Length!=32||!nonce.All(Uri.IsHexDigit))continue;var nic=interfaces.FirstOrDefault(n=>n.Contains(peer.Address.ToString()));if(nic==null)continue;byte[] answer=Encoding.UTF8.GetBytes("RYADOM_HERE_V1\t"+nonce+"\t"+nic.Address+"\t4280\t"+name);using(var sender=new UdpClient(new IPEndPoint(IPAddress.Parse(nic.Address),0))){LanInterfaces.BindOutput(sender.Client,nic.Index);sender.Send(answer,answer.Length,peer);}}catch{if(stopped)return;}}}
+  private void Listen(){while(!stopped){try{IPEndPoint peer=new IPEndPoint(IPAddress.Any,0);byte[] bytes=socket.Receive(ref peer);string request=Encoding.ASCII.GetString(bytes);if(!request.StartsWith("RYADOM_FIND_V2\t")||request.Length>100)continue;string nonce=request.Substring(15);if(nonce.Length!=32||!nonce.All(Uri.IsHexDigit))continue;var nic=interfaces.FirstOrDefault(n=>n.Contains(peer.Address.ToString()));if(nic==null)continue;byte[] answer=Encoding.UTF8.GetBytes("RYADOM_HERE_V2\t"+nonce+"\t"+nic.Address+"\t4280\t"+name+"\t"+hostId+"\t"+tlsFingerprint);using(var sender=new UdpClient(new IPEndPoint(IPAddress.Parse(nic.Address),0))){LanInterfaces.BindOutput(sender.Client,nic.Index);sender.Send(answer,answer.Length,peer);}}catch{if(stopped)return;}}}
   public static List<FoundChat> Find(List<LanInterface> nics) {
    var found=new Dictionary<string,FoundChat>();var tasks=nics.Select(nic=>Task.Run(()=>{
-    try{using(var udp=new UdpClient(new IPEndPoint(IPAddress.Parse(nic.Address),0))){LanInterfaces.BindOutput(udp.Client,nic.Index);udp.EnableBroadcast=true;udp.Client.ReceiveTimeout=400;udp.Client.SetSocketOption(SocketOptionLevel.IP,SocketOptionName.MulticastInterface,IPAddress.HostToNetworkOrder(nic.Index));string nonce=Guid.NewGuid().ToString("N");byte[] request=Encoding.ASCII.GetBytes("RYADOM_FIND_V1\t"+nonce);udp.Send(request,request.Length,new IPEndPoint(IPAddress.Parse(nic.Broadcast),Port));udp.Send(request,request.Length,new IPEndPoint(IPAddress.Parse("239.255.42.80"),Port));DateTime until=DateTime.UtcNow.AddSeconds(2);while(DateTime.UtcNow<until){try{IPEndPoint peer=new IPEndPoint(IPAddress.Any,0);string[] parts=Encoding.UTF8.GetString(udp.Receive(ref peer)).Split('\t');int port;if(parts.Length!=5||parts[0]!="RYADOM_HERE_V1"||parts[1]!=nonce||parts[2]!=peer.Address.ToString()||!nic.Contains(parts[2])||!int.TryParse(parts[3],out port)||port<1||port>65535)continue;var chat=new FoundChat{Name=Encoding.UTF8.GetString(Convert.FromBase64String(parts[4])),Address=parts[2],Port=port};if(chat.Name.Length>80)continue;lock(found)found[chat.Address+":"+port]=chat;}catch(SocketException){}}}}catch{}
+    try{using(var udp=new UdpClient(new IPEndPoint(IPAddress.Parse(nic.Address),0))){LanInterfaces.BindOutput(udp.Client,nic.Index);udp.EnableBroadcast=true;udp.Client.ReceiveTimeout=400;udp.Client.SetSocketOption(SocketOptionLevel.IP,SocketOptionName.MulticastInterface,IPAddress.HostToNetworkOrder(nic.Index));string nonce=Guid.NewGuid().ToString("N");byte[] request=Encoding.ASCII.GetBytes("RYADOM_FIND_V2\t"+nonce);udp.Send(request,request.Length,new IPEndPoint(IPAddress.Parse(nic.Broadcast),Port));udp.Send(request,request.Length,new IPEndPoint(IPAddress.Parse("239.255.42.80"),Port));DateTime until=DateTime.UtcNow.AddSeconds(2);while(DateTime.UtcNow<until){try{IPEndPoint peer=new IPEndPoint(IPAddress.Any,0);string[] parts=Encoding.UTF8.GetString(udp.Receive(ref peer)).Split('\t');int port;if(parts.Length!=7||parts[0]!="RYADOM_HERE_V2"||parts[1]!=nonce||parts[2]!=peer.Address.ToString()||!nic.Contains(parts[2])||!int.TryParse(parts[3],out port)||port<1||port>65535)continue;var chat=new FoundChat{Name=Encoding.UTF8.GetString(Convert.FromBase64String(parts[4])),Address=parts[2],Port=port,HostId=parts[5],TlsFingerprint=parts[6]};if(chat.Name.Length>80||chat.HostId.Length>80||chat.TlsFingerprint.Length>128)continue;lock(found)found[chat.Address+":"+port]=chat;}catch(SocketException){}}}}catch{}
    })).ToArray();Task.WaitAll(tasks);return found.Values.ToList();
   }
   public void Dispose(){stopped=true;if(socket!=null)socket.Close();foreach(var sender in senders)sender.Close();}

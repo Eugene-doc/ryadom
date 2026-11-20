@@ -65,7 +65,7 @@ public final class MainActivity extends Activity {
  private TextView errorText;
  private Button connectButton;
  private SharedPreferences prefs;
- private String base="", downloadUrl="", downloadCookie="", downloadName="";
+ private String base="", downloadUrl="", downloadCookie="", downloadName="", selectedHostId="", selectedHostFingerprint="";
  private DirectProxy proxy;
  private boolean hosting=false;
  private int screenGeneration=0;
@@ -186,7 +186,7 @@ public final class MainActivity extends Activity {
    }catch(TlsPin.PinMismatch e){pin=e;problem=e.getMessage();}
    catch(Exception e){String vpn=LanNetwork.vpnActive(this)?" Активен Happ/VPN: Android не позволяет принудительно обойти чужой VPN. Включите в Happ маршрут локальной сети напрямую (Direct) или добавьте «Рядом» в исключения и повторите.":"";problem="Нет прямой связи. Проверьте адрес и домашнюю Wi-Fi сеть. На главном устройстве разрешите «Рядом» входящие TCP 4280 и UDP 42800 (брандмауэр, в том числе сторонний: ESET, Kaspersky). Если Happ блокирует обход, добавьте «Рядом» в приложения Direct в Happ."+vpn+"\n"+(e.getMessage()==null?"":e.getMessage());}
    final String failure=problem;final DirectProxy ready=local;final TlsPin.PinMismatch mismatch=pin;
-   runOnUiThread(()->{if(isFinishing()||screenGeneration!=generation){if(ready!=null)ready.close();return;}if(mismatch!=null){connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);showPinReset(mismatch.address());}else if(failure.isEmpty()){if(proxy!=null)proxy.close();proxy=ready;base=proxy.base();hosting=false;prefs.edit().putString("server",target).apply();showChat();}else{connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);}});});
+   runOnUiThread(()->{if(isFinishing()||screenGeneration!=generation){if(ready!=null)ready.close();return;}if(mismatch!=null){connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);showPinReset(mismatch.address());}else if(failure.isEmpty()){if(proxy!=null)proxy.close();proxy=ready;base=proxy.base();hosting=false;prefs.edit().putString("server",target).putString("last_host_id",selectedHostId).putString("last_host_fp",selectedHostFingerprint).apply();showChat();}else{connectButton.setEnabled(true);connectButton.setText("Подключиться  →");errorText.setText(failure);}});});
  }
  /** The host was reinstalled or now presents another certificate: offer a deliberate trust reset. */
  private void showPinReset(final String address){
@@ -206,7 +206,7 @@ public final class MainActivity extends Activity {
     button.setEnabled(true);button.setText("Найти главное устройство в сети");
     if(visible.isEmpty()){errorText.setText(scanned.isEmpty()?(error.isEmpty()?"Чаты не найдены. Запустите чат на ПК или телефоне, либо введите адрес вручную. Проверьте, что сеть не гостевая и изоляция клиентов отключена.":error):"Найден только этот телефон. Он уже главный — выберите другое устройство или создайте чат здесь.");return;}
     String[] labels=new String[visible.size()];for(int i=0;i<labels.length;i++)labels[i]=visible.get(i).toString();
-    new AlertDialog.Builder(this).setTitle("Главное устройство").setItems(labels,(dialog,index)->{Discovery.Found f=visible.get(index);serverInput.setText(f.address+":"+f.port);connect();}).setNegativeButton("Отмена",null).show();
+    new AlertDialog.Builder(this).setTitle("Главное устройство").setItems(labels,(dialog,index)->{Discovery.Found f=visible.get(index);selectedHostId=f.hostId;selectedHostFingerprint=f.tlsFingerprint;serverInput.setText(f.address+":"+f.port);connect();}).setNegativeButton("Отмена",null).show();
    });
   });
  }

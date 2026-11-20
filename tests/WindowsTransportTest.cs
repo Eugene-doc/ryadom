@@ -24,7 +24,7 @@ class TransportTest {
   var service=Task.Run(()=>{using(var c=listener.AcceptTcpClient()){LanInterfaces.BindOutput(c.Client,nic.Index);var buffer=new byte[4096];int count=c.GetStream().Read(buffer,0,buffer.Length);c.GetStream().Write(buffer,0,count);}});
   using(var tunnel=new TcpBridge("127.0.0.1",0,c=>LanInterfaces.Connect(nic,nic.Address,port),c=>new byte[0],c=>{}))using(var client=new TcpClient("127.0.0.1",tunnel.Port)){client.ReceiveTimeout=5000;byte[] sent=Encoding.UTF8.GetBytes("Local traffic through physical NIC, even with Happ active");client.GetStream().Write(sent,0,sent.Length);byte[] got=new byte[4096];int n=client.GetStream().Read(got,0,got.Length);if(Encoding.UTF8.GetString(got,0,n)!=Encoding.UTF8.GetString(sent))throw new Exception("Transport mismatch");}
   listener.Stop();service.Wait();Console.WriteLine("Physical-interface binding + TCP transfer: PASS");
-  using(var discovery=new LanDiscovery(nics,"Ryadom test")){var found=LanDiscovery.Find(nics);if(!found.Any(c=>c.Name=="Ryadom test"))throw new Exception("Discovery failed");Console.WriteLine("LAN broadcast/multicast discovery: PASS");}
+  using(var discovery=new LanDiscovery(nics,"Ryadom test","d1-0123456789abcdef0123456789abcdef","abcdef")){var found=LanDiscovery.Find(nics);if(!found.Any(c=>c.Name=="Ryadom test"&&c.HostId=="d1-0123456789abcdef0123456789abcdef"&&c.TlsFingerprint=="abcdef"))throw new Exception("Discovery failed");Console.WriteLine("LAN broadcast/multicast discovery: PASS");}
 
   string dir=Path.Combine(Path.GetTempPath(),"RyadomTlsTest"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(dir);
   string fingerprint;using(var certificate=TlsIdentity.EnsureHostCertificate(dir,out fingerprint)) {

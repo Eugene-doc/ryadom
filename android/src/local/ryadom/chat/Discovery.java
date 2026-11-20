@@ -8,10 +8,13 @@ import java.util.*;
 final class Discovery implements AutoCloseable {
  interface Binder {void bind(DatagramSocket socket) throws IOException;}
  static final int PORT=42800;
- static final class Found {final String name,address;final int port;Found(String n,String a,int p){name=n;address=a;port=p;}public String toString(){return name+" — "+address+":"+port;}}
- final MulticastSocket socket;final List<String> ips;final List<Integer> prefixes;final Binder binder;volatile boolean closed;
+ static final class Found {final String name,address,hostId,tlsFingerprint;final int port;Found(String n,String a,int p){this(n,a,p,"","");}Found(String n,String a,int p,String hostId,String tlsFingerprint){name=n;address=a;port=p;this.hostId=hostId;this.tlsFingerprint=tlsFingerprint;}public String toString(){return name+" — "+address+":"+port;}}
+ final MulticastSocket socket;final List<String> ips;final List<Integer> prefixes;final Binder binder;volatile boolean closed;final String hostId,tlsFingerprint;
  Discovery(List<String> addresses,List<Integer> masks,String name,Binder binding) throws Exception {
-  ips=addresses;prefixes=masks;binder=binding;
+  this(addresses,masks,name,binding,"","");
+ }
+ Discovery(List<String> addresses,List<Integer> masks,String name,Binder binding,String hostId,String tlsFingerprint) throws Exception {
+  ips=addresses;prefixes=masks;binder=binding;this.hostId=hostId==null?"":hostId;this.tlsFingerprint=tlsFingerprint==null?"":tlsFingerprint;
   MulticastSocket created=new MulticastSocket(null);
   try{
    created.setReuseAddress(true);created.bind(new InetSocketAddress(PORT));
@@ -37,9 +40,9 @@ final class Discovery implements AutoCloseable {
  }
  private void handle(DatagramPacket packet,String name) throws Exception {
   String text=new String(packet.getData(),0,packet.getLength(),StandardCharsets.UTF_8);
-  if(!text.matches("RYADOM_FIND_V1\\t[0-9a-f]{32}"))return;
+  if(!text.matches("RYADOM_FIND_V2\\t[0-9a-f]{32}"))return;
   String address=nic(packet.getAddress().getHostAddress());if(address==null)return;
-  String response="RYADOM_HERE_V1\t"+text.substring(15)+"\t"+address+"\t4280\t"+Base64.getEncoder().encodeToString(name.getBytes(StandardCharsets.UTF_8));
+  String response="RYADOM_HERE_V2\t"+text.substring(15)+"\t"+address+"\t4280\t"+Base64.getEncoder().encodeToString(name.getBytes(StandardCharsets.UTF_8))+"\t"+hostId+"\t"+tlsFingerprint;
   byte[] bytes=response.getBytes(StandardCharsets.UTF_8);
   try(DatagramSocket sender=new DatagramSocket(new InetSocketAddress(InetAddress.getByName(address),0))){
    try{binder.bind(sender);}catch(SecurityException|IOException ignored){}
@@ -58,7 +61,7 @@ final class Discovery implements AutoCloseable {
      try{binder.bind(socket);}catch(SecurityException|IOException ignored){}
      socket.setBroadcast(true);socket.setSoTimeout(300);
      String nonce=UUID.randomUUID().toString().replace("-","");
-     byte[] request=("RYADOM_FIND_V1\t"+nonce).getBytes(StandardCharsets.UTF_8);
+     byte[] request=("RYADOM_FIND_V2\t"+nonce).getBytes(StandardCharsets.UTF_8);
      boolean sent=false;
      try{socket.send(new DatagramPacket(request,request.length,InetAddress.getByAddress(broadcast),PORT));sent=true;anySent=true;}
      catch(IOException|SecurityException e){lastError=message(e);}
@@ -81,10 +84,10 @@ final class Discovery implements AutoCloseable {
  }
  private static void parse(DatagramPacket reply,String nonce,byte[] address,int prefix,Map<String,Found> found) throws Exception {
   String[] p=new String(reply.getData(),0,reply.getLength(),StandardCharsets.UTF_8).split("\t");
-  if(p.length!=5||!p[0].equals("RYADOM_HERE_V1")||!p[1].equals(nonce)||!p[2].equals(reply.getAddress().getHostAddress())||!LanNetwork.sameSubnet(address,prefix,p[2]))return;
+  if(p.length!=7||!p[0].equals("RYADOM_HERE_V2")||!p[1].equals(nonce)||!p[2].equals(reply.getAddress().getHostAddress())||!LanNetwork.sameSubnet(address,prefix,p[2]))return;
   int port=Integer.parseInt(p[3]);if(port<1||port>65535)return;
-  String name=new String(Base64.getDecoder().decode(p[4]),StandardCharsets.UTF_8);if(name.length()>80)return;
-  found.put(p[2]+":"+port,new Found(name,p[2],port));
+  String name=new String(Base64.getDecoder().decode(p[4]),StandardCharsets.UTF_8);if(name.length()>80||p[5].length()>80||p[6].length()>128)return;
+  found.put(p[2]+":"+port,new Found(name,p[2],port,p[5],p[6]));
  }
  private static String message(Exception e){String value=e.getMessage();return value==null||value.isEmpty()?"Не удалось выполнить поиск в локальной сети":value;}
  public void close(){closed=true;socket.close();}

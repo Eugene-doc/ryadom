@@ -84,9 +84,9 @@ final class ChatHost implements AutoCloseable {
  }
  private static String value(String key,String fallback){String value=System.getenv(key);return value==null||value.isEmpty()?fallback:value;}
  private static long number(String key,long fallback){try{return Long.parseLong(value(key,String.valueOf(fallback)));}catch(Exception e){return fallback;}}
+ String tlsFingerprint(){return tls.fingerprint;}
  String localUrl(){
-  String token=token(32);
-  synchronized(this){long nowMs=System.currentTimeMillis();Iterator<Map.Entry<String,Long>> iterator=hostTokens.entrySet().iterator();while(iterator.hasNext()){if(iterator.next().getValue()<nowMs)iterator.remove();}hostTokens.put(token,nowMs+hostTokenTtl);}
+  String token=token(32);  synchronized(this){long nowMs=System.currentTimeMillis();Iterator<Map.Entry<String,Long>> iterator=hostTokens.entrySet().iterator();while(iterator.hasNext()){if(iterator.next().getValue()<nowMs)iterator.remove();}hostTokens.put(token,nowMs+hostTokenTtl);}
   return "http://127.0.0.1:"+port+"/#t="+token;
  }
  private static String now(){return Instant.now().toString();}
@@ -328,7 +328,7 @@ final class ChatHost implements AutoCloseable {
    String asset=route.equals("/")?"index.html":route.substring(1);String mime=asset.endsWith(".html")?"text/html; charset=utf-8":asset.endsWith(".js")?"text/javascript; charset=utf-8":asset.endsWith(".css")?"text/css; charset=utf-8":"image/svg+xml";
    request.reply(200,mime,assets.read(asset),null);return;
   }
-  if(route.equals("/api/health")&&request.method.equals("GET")){request.json(200,new JSONObject().put("app","ryadom").put("version",VERSION).put("protocol",PROTOCOL).put("name","Рядом на Android").put("tls","1").put("fingerprint",tls.fingerprint).toString());return;}
+  if(route.equals("/api/health")&&request.method.equals("GET")){JSONObject chat=state.optJSONObject("chat");request.json(200,new JSONObject().put("app","ryadom").put("version",VERSION).put("protocol",PROTOCOL).put("name","Рядом на Android").put("tls","1").put("fingerprint",tls.fingerprint).put("sessionId",chat==null?"":chat.optString("sessionId")).put("term",chat==null?0:chat.optLong("term",0)).put("hostDeviceId",chat==null?"":chat.optString("hostDeviceId")).toString());return;}
   if(route.startsWith("/api/local/")){
    if(route.equals("/api/local/choose-role")&&request.method.equals("POST")){
     if(!request.loopback())throw new MiniHttp.Failure(403,"Только на этом устройстве");

@@ -32,6 +32,14 @@ namespace Ryadom {
   private X509Certificate2 hostCert;
   private const string BaseUrl="http://127.0.0.1:4280/";
   private static readonly string NativeKeyFile=Path.Combine(Data,"native-key");
+  private static readonly string LastHostFile=Path.Combine(Data,"last-host");
+  private static void ReadLastHost(out string id,out string fingerprint) {
+   id="";fingerprint="";
+   try{foreach(string line in File.ReadAllLines(LastHostFile)){int at=line.IndexOf('=');if(at<0)continue;string key=line.Substring(0,at),value=line.Substring(at+1);if(key=="id")id=value;else if(key=="fingerprint")fingerprint=value;}}catch{}
+  }
+  private static void WriteLastHost(string id,string fingerprint) {
+   try{if(string.IsNullOrEmpty(id)||string.IsNullOrEmpty(fingerprint))File.Delete(LastHostFile);else File.WriteAllText(LastHostFile,"id="+id+Environment.NewLine+"fingerprint="+fingerprint+Environment.NewLine,new UTF8Encoding(false));}catch{}
+  }
   private static string NativeKey() {
    try{if(File.Exists(NativeKeyFile)){string key=File.ReadAllText(NativeKeyFile).Trim();if(key.Length==64)return key;}}catch{}
    string generated=Guid.NewGuid().ToString("N")+Guid.NewGuid().ToString("N");
@@ -63,11 +71,11 @@ namespace Ryadom {
    bool first;
    using(var mutex=new Mutex(true,"Local\\Ryadom.PersonalChat",out first)) {
     if(!first){MessageBox.Show("Рядом уже запущен. Откройте окно чата через значок рядом с часами.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
-    do {chooseAgain=false;try{using(var picker=new RolePicker(File.Exists(Path.Combine(Data,"last-target"))?File.ReadAllText(Path.Combine(Data,"last-target")):"")){if(picker.ShowDialog()!=DialogResult.OK)return;using(var app=new ChatApplication(picker))Application.Run(app);}}catch(Exception e){MessageBox.Show("Не удалось запустить Рядом.\n\n"+e.Message,"Рядом",MessageBoxButtons.OK,MessageBoxIcon.Error);}}while(chooseAgain);
+    do {chooseAgain=false;try{string lastId,lastFingerprint;ReadLastHost(out lastId,out lastFingerprint);using(var picker=new RolePicker(File.Exists(Path.Combine(Data,"last-target"))?File.ReadAllText(Path.Combine(Data,"last-target")):"",lastId,lastFingerprint)){if(picker.ShowDialog()!=DialogResult.OK)return;using(var app=new ChatApplication(picker))Application.Run(app);}}catch(Exception e){MessageBox.Show("Не удалось запустить Рядом.\n\n"+e.Message,"Рядом",MessageBoxButtons.OK,MessageBoxIcon.Error);}}while(chooseAgain);
    }
   }
   private ChatApplication(RolePicker picker) {
-   choice=picker;File.WriteAllText(Path.Combine(Data,"desktop-role"),choice.Hosting?"host":"client");if(!choice.Hosting)File.WriteAllText(Path.Combine(Data,"last-target"),choice.Target+":"+choice.TargetPort);else try{File.Delete(Path.Combine(Data,"last-target"));}catch{}
+   choice=picker;File.WriteAllText(Path.Combine(Data,"desktop-role"),choice.Hosting?"host":"client");if(!choice.Hosting){File.WriteAllText(Path.Combine(Data,"last-target"),choice.Target+":"+choice.TargetPort);WriteLastHost(choice.TargetHostId,choice.TargetFingerprint);}else{try{File.Delete(Path.Combine(Data,"last-target"));}catch{}WriteLastHost("","");}
    File.Delete(Path.Combine(Data,"choose-role"));
    tray=new NotifyIcon{Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath),Text=choice.Hosting?"Рядом · главное устройство":"Рядом · подключён к чату"};
    var menu=new ContextMenuStrip();menu.Items.Add("Открыть чат",null,(s,e)=>OpenChat(false));if(choice.Hosting){menu.Items.Add("Подключить устройство",null,(s,e)=>OpenChat(true));menu.Items.Add("Настроить брандмауэр",null,(s,e)=>FirewallAdvisor.Configure(Data));menu.Items.Add("Проверить брандмауэр и сеть",null,(s,e)=>FirewallAdvisor.ShowReport(Data));}
@@ -98,7 +106,7 @@ namespace Ryadom {
    var active=new List<string>();
    foreach(var nic in nics){try{var local=nic;bridges.Add(new TcpBridge(local.Address,4280,c=>new TcpClient("127.0.0.1",4282),c=>Encoding.ASCII.GetBytes("RYADOM/1 "+bridgeKey+" "+((IPEndPoint)c.Client.RemoteEndPoint).Address+" "+local.Address+"\r\n"),c=>{string peer=((IPEndPoint)c.Client.RemoteEndPoint).Address.ToString();if(!LanInterfaces.Private(peer)||!local.Contains(peer))throw new IOException("Другая подсеть");LanInterfaces.BindOutput(c.Client,local.Index);},socket=>LanInterfaces.BindOutput(socket,local.Index),true,hostCert));active.Add(local.Address);}catch(Exception e){File.AppendAllText(Path.Combine(Data,"network.log"),DateTime.Now+" "+nic.Address+" "+e.Message+Environment.NewLine);}}
    File.WriteAllText(Path.Combine(Data,"lan-state.json"),"{\"addresses\":["+string.Join(",",active.Select(a=>"\""+a+"\""))+"],\"mode\":\"physical-interface\"}",new UTF8Encoding(false));
-   if(active.Count>0)try{discovery=new LanDiscovery(nics.Where(n=>active.Contains(n.Address)).ToList(),Environment.MachineName);}catch{}
+   if(active.Count>0)try{discovery=new LanDiscovery(nics.Where(n=>active.Contains(n.Address)).ToList(),Environment.MachineName,Device.Id,TlsIdentity.Fingerprint(hostCert));}catch{}
    networkStamp=stamp;
   }
   private void Tick(object sender,EventArgs args) {
