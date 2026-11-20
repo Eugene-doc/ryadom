@@ -53,10 +53,10 @@ async function pairDevice(cookie,name,customCode){
 before(async()=>{await start();host=await loginHost();});
 after(async()=>{await stop();fs.rmSync(dir,{recursive:true,force:true});});
 
-test('Protocol 3 exposes the legacy chat revision',async()=>{
+test('Protocol 4 exposes the session chat revision',async()=>{
  const health=await fetch(`${base}/api/health`);
  const h=await health.json();
- assert.equal(h.protocol,3);
+ assert.equal(h.protocol,4);
  const {r,data}=await call('/api/state','GET',undefined,host);
  assert.equal(r.status,200);
  assert.equal(data.chat.id,'legacy');
@@ -66,7 +66,7 @@ test('Protocol 3 exposes the legacy chat revision',async()=>{
  assert.equal(typeof data.chat.sessionId,'string');
  assert.equal(typeof data.chat.term,'number');
  assert.equal(typeof data.chat.hostDeviceId,'string');
- assert.equal(data.server.protocol,3);
+ assert.equal(data.server.protocol,4);
 });
 
 test('Private chat end-to-end',async t=>{

@@ -8,8 +8,8 @@ const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const { DatabaseSync } = require('node:sqlite');
 const sea = require('node:sea');
-const VERSION = '0.3.3';
-const PROTOCOL = 3;
+const VERSION = '0.4.0';
+const PROTOCOL = 4;
 const MAX_FILE = 512 * 1024 * 1024;
 const PORT = Number(process.env.RYADOM_PORT || 4280);
 const DATA = process.env.RYADOM_DATA || path.join(process.env.LOCALAPPDATA || os.homedir(), 'Ryadom');
@@ -58,7 +58,7 @@ db.exec("UPDATE files SET state='ready' WHERE state IS NULL OR state=''");
 for (const row of db.prepare("SELECT id,file FROM messages WHERE file IS NOT NULL AND deletedAt IS NULL").all()) {
  try { const file = JSON.parse(row.file); if (file && file.id) db.prepare('UPDATE files SET messageId=? WHERE id=?').run(row.id, file.id); } catch {}
 }
-db.exec('PRAGMA user_version=3');
+db.exec('PRAGMA user_version=4');
 function metaValue(key){return db.prepare('SELECT value FROM meta WHERE key=?').get(key)?.value || '';}
 function setMeta(key,value){db.prepare('INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);}
 if(!metaValue('group_id')) setMeta('group_id', crypto.randomBytes(16).toString('hex'));
@@ -185,6 +185,7 @@ function closeClients(match, type) {
 }
 function message(row) { return { ...row, file: row.file ? JSON.parse(row.file) : null, sessionId: chatRow().sessionId, term: chatRow().term }; }
 function addMessage(d, text, file, requestId, announce = true) {
+ if (sessionEnding) throw error(409, 'Чат завершается. Новые сообщения недоступны');
  const old = db.prepare('SELECT * FROM messages WHERE requestId=?').get(requestId);
  if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); if (old.deviceId !== d.id) throw error(409, 'Повторите отправку'); return message(old); }
  const id = crypto.randomUUID();
@@ -226,6 +227,15 @@ function hostDevice() {
   db.prepare('INSERT INTO devices (id,name,token,host,created) VALUES (?,?,?,1,?)').run(HOST_DEVICE_ID || crypto.randomUUID(), 'Мой компьютер', sha(crypto.randomBytes(32).toString('hex')), now());
   d = db.prepare('SELECT * FROM devices WHERE host=1').get();
  }
+ if (HOST_DEVICE_ID && d.id !== HOST_DEVICE_ID && !db.prepare('SELECT id FROM devices WHERE id=?').get(HOST_DEVICE_ID)) {
+  db.exec('BEGIN');
+  try {
+   db.prepare('UPDATE sessions SET deviceId=? WHERE deviceId=?').run(HOST_DEVICE_ID, d.id);
+   db.prepare('UPDATE devices SET id=? WHERE id=?').run(HOST_DEVICE_ID, d.id);
+   db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  d = db.prepare('SELECT * FROM devices WHERE host=1').get();
+ }
  return d;
 }
 const sessionMarker = path.join(DATA, 'runtime.json');
@@ -251,7 +261,11 @@ function beginEphemeralSession() {
  let crashed = false;
  try { crashed = ['ACTIVE', 'ENDING'].includes(JSON.parse(fs.readFileSync(sessionMarker, 'utf8')).state); } catch {}
  const host = hostDevice();
- clearEphemeralData();
+ const pending = clearEphemeralData();
+ if (pending) {
+  try { writeSessionMarker({ state: 'ENDING', sessionId: chatRow().sessionId || '', term: chatRow().term || 0, hostDeviceId: HOST_DEVICE_ID || host.id, created: now() }); } catch {}
+  throw new Error('Не удалось удалить остатки предыдущей истории. Закройте файлы Рядом и запустите снова.');
+ }
  const chat = chatRow();
  const sessionId = crypto.randomBytes(16).toString('hex');
  const term = (chat.term || 0) + 1;
@@ -265,6 +279,7 @@ function endEphemeralSession() {
  sessionEnding = true;
  const chat = chatRow();
  try { broadcast('session_ending', { sessionId: chat.sessionId, reason: 'shutdown' }); } catch {}
+ for (const meta of uploadMeta.values()) try { meta.req.destroy(); } catch {}
  const pending = clearEphemeralData();
  try { if (!pending) fs.rmSync(sessionMarker, { force: true }); } catch {}
 }
@@ -408,6 +423,7 @@ const server = http.createServer(async (req, res) => {
    return send(res, 200, { ok: true, device: { id: d.id, name: d.name, host: false } }, { 'Set-Cookie': p.sessionCookie });
   }
   const d = device(req); if (!d) throw error(401, 'Подключите устройство по коду');
+  if (sessionEnding && req.method !== 'GET' && route !== '/api/host/stop' && route !== '/api/logout') throw error(409, 'Чат завершается. Дождитесь остановки');
   if (route === '/api/trust/roster' && req.method === 'GET') {
    const devices = db.prepare('SELECT id,name,token,created FROM devices WHERE host=0 ORDER BY created').all().map(x => ({ id: x.id, name: x.name, tokenHash: x.token, created: x.created }));
    return send(res, 200, { groupId: metaValue('group_id'), devices });
@@ -525,10 +541,11 @@ const server = http.createServer(async (req, res) => {
    const old = db.prepare('SELECT * FROM messages WHERE requestId=? AND deviceId=?').get(requestId, d.id);
    if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); req.resume(); return send(res, 200, message(old)); }
    if (uploadJobs.has(requestId) || (activeUploads.get(d.id) || 0) >= 2) throw error(429, 'Дождитесь завершения текущей передачи');
+   const requestSessionId = chatRow().sessionId;
    const epoch = chatRow().epoch;
    const release = reserveBytes(d.id, size);
    uploadJobs.add(requestId); activeUploads.set(d.id, (activeUploads.get(d.id) || 0) + 1);
-   uploadMeta.set(requestId, { chatId: 'legacy', epoch, deviceId: d.id, req });
+   uploadMeta.set(requestId, { chatId: 'legacy', epoch, sessionId: chatRow().sessionId, deviceId: d.id, req });
    const id = crypto.randomUUID(); const tmp = path.join(uploads, `${id}.part`); const final = path.join(uploads, id); let committed = false;
    try {
     let count = 0;
@@ -536,7 +553,7 @@ const server = http.createServer(async (req, res) => {
     await pipeline(req, limit, fs.createWriteStream(tmp, { flags: 'wx' }));
     if (count !== size) throw error(400, 'Передача прервалась. Отправьте файл ещё раз');
     if (!db.prepare('SELECT id FROM devices WHERE id=?').get(d.id)) throw error(401, 'Доступ устройства отозван');
-    if (chatRow().epoch !== epoch) throw error(409, 'Чат был очищен. Отправьте файл заново');
+    if (chatRow().epoch !== epoch || sessionEnding || chatRow().sessionId !== requestSessionId) throw error(409, 'Чат был очищен. Отправьте файл заново');
     const f = { id, name: cleanName(url.searchParams.get('name')), mime: sniff(tmp), size: count };
     fs.renameSync(tmp, final);
     db.exec('BEGIN');

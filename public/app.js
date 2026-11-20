@@ -19,11 +19,12 @@ function showJoin(){events?.close();events=null;me=null;chat=null;messages.clear
 function showUpdate(){events?.close();events=null;me=null;$('app').hidden=true;$('join-screen').hidden=false;$('join-error').textContent='Версия главного устройства несовместима. Обновите Рядом на всех устройствах.';}
 function applyState(data,generation=stateGeneration){
  if(generation!==stateGeneration)return;
- if(data.server&&data.server.protocol!==undefined&&data.server.protocol!==3){showUpdate();return;}
+ if(data.server&&data.server.protocol!==undefined&&data.server.protocol!==4){showUpdate();return;}
  me=data.me;devices=data.devices;pairing=data.pairing;addresses=data.server.addresses;pendingRequests=data.pendingRequests||[];fingerprint=data.server.fingerprint||'';tlsEnabled=!!data.server.tls;storage=data.storage||null;
  const incoming=data.chat||{id:'legacy',revision:0,deletionRevision:0,epoch:0};
- if(chat&&(incoming.revision<chat.revision||(incoming.deletionRevision??0)<(chat.deletionRevision??0)))return;
- const reset=chat&&(chat.id!==incoming.id||chat.sessionId!==incoming.sessionId||(chat.deletionRevision??0)!==(incoming.deletionRevision??0)||chat.epoch!==incoming.epoch);chat=incoming;
+ const changedSession=!!chat&&chat.sessionId!==incoming.sessionId;
+ if(chat&&!changedSession&&(incoming.revision<chat.revision||(incoming.deletionRevision??0)<(chat.deletionRevision??0)))return;
+ const reset=chat&&(changedSession||chat.id!==incoming.id||(chat.deletionRevision??0)!==(incoming.deletionRevision??0)||chat.epoch!==incoming.epoch);chat=incoming;
  if(reset){messages.clear();canLoadOlder=false;stateGeneration++;}
  $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;$('header-clear-chat-button').hidden=!me.host;
  $('app-version').textContent=`Приложение ${(typeof window.ryadom?.appVersion==='function'?window.ryadom.appVersion():window.ryadom?.appVersion)||'—'} · главное ${data.server.version||'—'}`;

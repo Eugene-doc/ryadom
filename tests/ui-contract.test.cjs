@@ -34,5 +34,5 @@ test('0.3.0 UI exposes deletion, clear, downloads and version controls', () => {
  assert.match(js, /forget-offline/);
  assert.match(html, /История и главное устройство/);
  assert.match(html, /Забыть неактивные устройства/);
- assert.match(js, /data\.server\.protocol!==3/);
+ assert.match(js, /data\.server\.protocol!==4/);
 });
