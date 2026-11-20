@@ -143,12 +143,14 @@ test('Private chat end-to-end',async t=>{
   const second=(await call(`/api/messages?after=${first.at(-1).seq}`)).data;assert.equal(second.length,5);
   const older=(await call(`/api/messages?before=${first[0].seq}`)).data;assert.equal(older.at(-1).seq,from);
  });
- await t.test('Persist history, sessions and files across restart',async()=>{
-  const count=(await call('/api/state')).data.total;
+ await t.test('Clear history on restart but preserve device and session',async()=>{
+  const before=(await call('/api/state')).data;
+  assert.ok(before.chat.sessionId);
   await stop();await start();
   const s=(await call('/api/state','GET',undefined,client)).data;
-  assert.equal(s.total,count);assert.equal(s.me.id,clientId);
-  assert.equal((await fetch(base+'/files/'+fileId,{headers:{Cookie:host}})).status,200);
+  assert.equal(s.total,0);assert.equal(s.me.id,clientId);
+  assert.notEqual(s.chat.sessionId,before.chat.sessionId);
+  assert.equal((await fetch(base+'/files/'+fileId,{headers:{Cookie:host}})).status,404);
  });
  await t.test('Close pairing and revoke device access',async()=>{
   await call('/api/host/pairing','POST',{enabled:false});

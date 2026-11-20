@@ -222,7 +222,7 @@ test('clear removes orphan part files and reports deletion revision', async () =
  assert.equal(fs.readdirSync(filesDir).filter(name => name.endsWith('.part')).length, 0);
 });
 
-test('clear reports a partial cleanup when a file cannot be unlinked', async () => {
+test('restart clears a partial clear and starts an empty session', async () => {
  const host = await login();
  const device = await pair(host, 'Занятый файл');
  const attachment = await upload(device, 'locked.txt', 'clear-locked-1');
@@ -232,6 +232,7 @@ test('clear reports a partial cleanup when a file cannot be unlinked', async () 
  fs.mkdirSync(disk);
  fs.writeFileSync(path.join(disk, 'blocked'), 'x');
  const preview = await req('/api/chat/clear/preview', { cookie: host });
+ const oldSession = preview.data.sessionId;
  const clear = await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-locked-op' }, cookie: host });
  assert.equal(clear.r.status, 202);
  assert.equal(clear.data.cleanupPending, true);
@@ -247,9 +248,11 @@ test('clear reports a partial cleanup when a file cannot be unlinked', async () 
  fs.writeFileSync(disk, 'payload');
  await stop();
  await start();
- const recovered = await req('/api/operations/clear-locked-op', { cookie: host });
- assert.equal(recovered.r.status, 200, logs);
- assert.equal(recovered.data.status, 'done', logs);
+ const state = await req('/api/state', { cookie: host });
+ assert.equal(state.data.total, 0);
+ assert.notEqual(state.data.chat.sessionId, oldSession);
+ assert.equal((await req('/api/operations/clear-locked-op', { cookie: host })).r.status, 404);
+ assert.equal(fs.existsSync(disk), false);
 });
 
 test('clear cancels an in-flight upload', async () => {

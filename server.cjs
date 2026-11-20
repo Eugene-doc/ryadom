@@ -46,6 +46,9 @@ if (!columnExists('files', 'chatId')) { try { db.exec("ALTER TABLE files ADD COL
 if (!columnExists('files', 'messageId')) { try { db.exec('ALTER TABLE files ADD COLUMN messageId TEXT'); } catch {} }
 if (!columnExists('files', 'state')) { try { db.exec("ALTER TABLE files ADD COLUMN state TEXT NOT NULL DEFAULT 'ready'"); } catch {} }
 if (!columnExists('chats', 'deletionRevision')) { try { db.exec('ALTER TABLE chats ADD COLUMN deletionRevision INTEGER NOT NULL DEFAULT 0'); } catch {} }
+if (!columnExists('chats', 'sessionId')) { try { db.exec("ALTER TABLE chats ADD COLUMN sessionId TEXT NOT NULL DEFAULT ''"); } catch {} }
+if (!columnExists('chats', 'term')) { try { db.exec('ALTER TABLE chats ADD COLUMN term INTEGER NOT NULL DEFAULT 0'); } catch {} }
+if (!columnExists('chats', 'hostDeviceId')) { try { db.exec('ALTER TABLE chats ADD COLUMN hostDeviceId TEXT'); } catch {} }
 db.prepare("INSERT OR IGNORE INTO chats (id,type,title,ownerDeviceId,created,revision,deletionRevision,epoch) VALUES ('legacy','legacy','Свои устройства',NULL,?,0,0,0)").run(new Date().toISOString());
 db.exec("UPDATE messages SET chatId='legacy' WHERE chatId IS NULL OR chatId=''");
 db.exec("UPDATE files SET chatId='legacy' WHERE chatId IS NULL OR chatId=''");
@@ -162,7 +165,7 @@ function closeClients(match, type) {
  }
  broadcast('devices', publicDevices());
 }
-function message(row) { return { ...row, file: row.file ? JSON.parse(row.file) : null }; }
+function message(row) { return { ...row, file: row.file ? JSON.parse(row.file) : null, sessionId: chatRow().sessionId, term: chatRow().term }; }
 function addMessage(d, text, file, requestId, announce = true) {
  const old = db.prepare('SELECT * FROM messages WHERE requestId=?').get(requestId);
  if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); if (old.deviceId !== d.id) throw error(409, 'Повторите отправку'); return message(old); }
@@ -206,6 +209,46 @@ function hostDevice() {
   d = db.prepare('SELECT * FROM devices WHERE host=1').get();
  }
  return d;
+}
+const sessionMarker = path.join(DATA, 'runtime.json');
+let sessionEnding = false;
+function clearEphemeralData() {
+ let pending = false;
+ try {
+  for (const name of fs.readdirSync(uploads)) {
+   try { fs.rmSync(path.join(uploads, name), { force: true, recursive: true }); } catch { pending = true; }
+  }
+ } catch { pending = true; }
+ db.exec('DELETE FROM messages; DELETE FROM files; DELETE FROM operations;');
+ db.prepare('UPDATE chats SET revision=0,deletionRevision=0,epoch=0 WHERE id=?').run('legacy');
+ return pending;
+}
+function writeSessionMarker(value) {
+ const temporary = sessionMarker + '.tmp';
+ const fd = fs.openSync(temporary, 'w');
+ try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+ fs.renameSync(temporary, sessionMarker);
+}
+function beginEphemeralSession() {
+ let crashed = false;
+ try { crashed = ['ACTIVE', 'ENDING'].includes(JSON.parse(fs.readFileSync(sessionMarker, 'utf8')).state); } catch {}
+ const host = hostDevice();
+ clearEphemeralData();
+ const chat = chatRow();
+ const sessionId = crypto.randomBytes(16).toString('hex');
+ const term = (chat.term || 0) + 1;
+ db.prepare('UPDATE chats SET sessionId=?,term=?,hostDeviceId=? WHERE id=?').run(sessionId, term, host.id, 'legacy');
+ writeSessionMarker({ state: 'ACTIVE', sessionId, term, hostDeviceId: host.id, created: now() });
+ if (crashed) console.log('Предыдущая сессия Рядом завершилась аварийно; остатки истории очищены.');
+ return { sessionId, term, hostDeviceId: host.id };
+}
+function endEphemeralSession() {
+ if (sessionEnding) return;
+ sessionEnding = true;
+ const chat = chatRow();
+ try { broadcast('session_ending', { sessionId: chat.sessionId, reason: 'shutdown' }); } catch {}
+ const pending = clearEphemeralData();
+ try { if (!pending) fs.rmSync(sessionMarker, { force: true }); } catch {}
 }
 function prunePairs() {
  const nowMs = Date.now();
@@ -285,7 +328,7 @@ const server = http.createServer(async (req, res) => {
    const name = route === '/' ? 'index.html' : route.slice(1);
    res.writeHead(200, { 'Content-Type': { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' }[name.split('.').pop()] }); return res.end(assets.get(name));
   }
-  if (route === '/api/health' && req.method === 'GET') return send(res, 200, { app: 'ryadom', version: VERSION, protocol: PROTOCOL, name: os.hostname(), tls: process.env.RYADOM_TLS === '1' ? '1' : '0', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined });
+  if (route === '/api/health' && req.method === 'GET') { const chat = chatRow(); return send(res, 200, { app: 'ryadom', version: VERSION, protocol: PROTOCOL, name: os.hostname(), tls: process.env.RYADOM_TLS === '1' ? '1' : '0', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined, sessionId: chat.sessionId, term: chat.term, hostDeviceId: chat.hostDeviceId }); }
   if (route === '/api/host-login' && req.method === 'POST') {
    if (!loopback(req)) throw error(403, 'Откройте чат на главном устройстве');
    const body = await json(req);
@@ -331,7 +374,7 @@ const server = http.createServer(async (req, res) => {
   if (route === '/api/state' && req.method === 'GET') {
    const chat = chatRow();
    const messages = db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL ORDER BY seq DESC LIMIT 100').all().reverse().map(message);
-   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, revision: chat.revision, deletionRevision: chat.deletionRevision, epoch: chat.epoch }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), version: VERSION, protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
+   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, sessionId: chat.sessionId, term: chat.term, hostDeviceId: chat.hostDeviceId, revision: chat.revision, deletionRevision: chat.deletionRevision, epoch: chat.epoch }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), version: VERSION, protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
    if (d.host) { state.pairing = pairing; state.pendingRequests = pendingList(); state.storage = { totalBytes: MAX_TOTAL_BYTES, usedBytes: totalBytes(), freeBytes: freeDiskBytes() }; }
    return send(res, 200, state);
   }
@@ -387,7 +430,7 @@ const server = http.createServer(async (req, res) => {
    const activeMessages = db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n;
    const files = db.prepare("SELECT count(*) AS n, COALESCE(SUM(size),0) AS bytes FROM files WHERE chatId='legacy' AND state='ready'").get();
    const tempFiles = fs.readdirSync(uploads).filter(name => name.endsWith('.part')).length;
-   return send(res, 200, { chatId: 'legacy', revision: chat.revision, epoch: chat.epoch, activeMessages, activeFiles: files.n, bytes: files.bytes, tempFiles });
+   return send(res, 200, { chatId: 'legacy', sessionId: chat.sessionId, term: chat.term, hostDeviceId: chat.hostDeviceId, revision: chat.revision, epoch: chat.epoch, activeMessages, activeFiles: files.n, bytes: files.bytes, tempFiles });
   }
   if (route === '/api/chat/clear' && req.method === 'POST') {
    if (!d.host) throw error(403, 'Очистка доступна на главном устройстве');
@@ -425,7 +468,7 @@ const server = http.createServer(async (req, res) => {
    const result = { revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, messages: activeMessages, files: files.length, bytes, freedBytes, tempFiles: cleaned.tempFiles, cleanupPending };
    db.prepare('UPDATE operations SET status=?,updatedAt=?,result=?,error=? WHERE id=?').run(status, now(), JSON.stringify(result), cleanupPending ? 'Не все файлы удалены' : null, operationId);
    logEvent('chat_cleared', operationId, address(peer));
-   broadcast('chat_cleared', { chatId: 'legacy', revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, operationId, freedBytes, tempFiles: cleaned.tempFiles, cleanupPending });
+   broadcast('chat_cleared', { chatId: 'legacy', sessionId: next.sessionId, revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, operationId, freedBytes, tempFiles: cleaned.tempFiles, cleanupPending });
    return send(res, 202, { operationId, status, revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, freedBytes, tempFiles: cleaned.tempFiles, cleanupPending });
   }
   if (route.startsWith('/api/operations/') && req.method === 'GET') {
@@ -562,7 +605,7 @@ function openWindow() {
   else { const p = spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, stdio: 'ignore' }); p.unref(); }
  } else { const p = spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [url], { stdio: 'ignore', detached: true }); p.on('error', () => {}); p.unref(); }
 }
-function shutdown() { bridgeServer?.close(); for (const res of clients.keys()) res.end(); server.close(() => { db.close(); process.exit(0); }); setTimeout(() => process.exit(0), 2000).unref(); }
+function shutdown() { if (sessionEnding) return; endEphemeralSession(); bridgeServer?.close(); for (const res of clients.keys()) res.end(); server.close(() => { db.close(); process.exit(0); }); setTimeout(() => process.exit(0), 2000).unref(); }
 process.on('SIGINT', shutdown); process.on('SIGTERM', shutdown);
 if (process.env.RYADOM_PARENT_PID) {
  const parent = Number(process.env.RYADOM_PARENT_PID);
@@ -585,6 +628,7 @@ if (NATIVE_KEY && process.env.RYADOM_BRIDGE_PORT) {
   socket.on('data', receive); socket.on('error', () => {});
  }); bridgeServer.on('error', e => { console.error(e); process.exit(1); }); bridgeServer.listen(Number(process.env.RYADOM_BRIDGE_PORT), '127.0.0.1');
 }
+const activeSession = beginEphemeralSession();
 server.listen(PORT, process.env.RYADOM_LAN_STATE ? '127.0.0.1' : '0.0.0.0', () => {
  for (const file of fs.readdirSync(uploads)) if (file.endsWith('.part')) try { fs.rmSync(path.join(uploads, file), { force: true }); } catch {}
  for (const row of db.prepare("SELECT id FROM files WHERE state='deleting'").all()) {

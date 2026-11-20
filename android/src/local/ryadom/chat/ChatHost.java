@@ -39,7 +39,7 @@ final class ChatHost implements AutoCloseable {
  private final long sessionTtl,hostTokenTtl,pairTtl,maxTotal,maxDevice,minFree;
  private final int msgPerMin,uploadPerMin,maxPending,pairAttempts;
  private final String nativeKey;
- private final Runnable stop;private final MiniHttp http;
+ private final Runnable stop;private final MiniHttp http;private boolean sessionEnding;
  private final ExecutorService sse=Executors.newCachedThreadPool(new ThreadFactory(){public Thread newThread(Runnable run){Thread thread=new Thread(run,"Ryadom SSE");thread.setDaemon(true);return thread;}});
  ChatHost(File dir,List<String> ips,int port,Assets a,Runnable stopRequest) throws Exception {
   directory=dir;files=new File(dir,"files");files.mkdirs();stateFile=new File(dir,"chat.json");assets=a;addresses=new ArrayList<>(ips);this.port=port;stop=stopRequest;
@@ -72,6 +72,7 @@ final class ChatHost implements AutoCloseable {
   migrateSessions();
   migrateChatV3();
   recoverDeletedFiles();
+  beginEphemeralSession();
   newCode(true);
   List<String> plain=new ArrayList<>();plain.add("127.0.0.1");
   List<String> secure=new ArrayList<>();for(String ip:ips)if(!plain.contains(ip)&&!secure.contains(ip))secure.add(ip);
@@ -276,7 +277,7 @@ final class ChatHost implements AutoCloseable {
    if(file!=null&&find(state.getJSONArray("devices"),"id",device.getString("id"))==null)throw new MiniHttp.Failure(401,"Доступ устройства отозван");
    JSONObject chat=state.optJSONObject("chat");long revision=(chat==null?0:chat.optLong("revision",0))+1;
    if(file!=null)file.put("chatId","legacy").put("state","ready");
-   message=new JSONObject().put("seq",state.getLong("seq")+1).put("id",UUID.randomUUID().toString()).put("deviceId",device.getString("id")).put("deviceName",device.getString("name")).put("text",text).put("file",file==null?JSONObject.NULL:file).put("created",now()).put("requestId",requestId).put("chatId","legacy").put("revision",revision).put("epoch",chat==null?0:chat.optLong("epoch",0));
+   message=new JSONObject().put("seq",state.getLong("seq")+1).put("id",UUID.randomUUID().toString()).put("deviceId",device.getString("id")).put("deviceName",device.getString("name")).put("text",text).put("file",file==null?JSONObject.NULL:file).put("created",now()).put("requestId",requestId).put("chatId","legacy").put("sessionId",state.getJSONObject("chat").optString("sessionId")).put("revision",revision).put("epoch",chat==null?0:chat.optLong("epoch",0));
    if(file!=null)file.put("messageId",message.getString("id"));
    final JSONObject created=message;
    change(next->{
@@ -288,6 +289,23 @@ final class ChatHost implements AutoCloseable {
   }
   broadcast("message",message,false);
   return message;
+ }
+ private synchronized void beginEphemeralSession() throws Exception {
+  final JSONObject host=hostDevice();
+  final String sessionId=token(16);
+  final long[] term=new long[1];
+  change(next->{
+   JSONObject chat=next.getJSONObject("chat");term[0]=chat.optLong("term",0)+1;
+   next.put("messages",new JSONArray()).put("files",new JSONArray()).put("operations",new JSONArray());
+   chat.put("sessionId",sessionId).put("term",term[0]).put("hostDeviceId",host.getString("id")).put("revision",0).put("deletionRevision",0).put("epoch",0);
+  });
+  File[] local=files.listFiles();if(local!=null)for(File file:local)try{file.delete();}catch(Exception ignored){}
+ }
+ private synchronized void endEphemeralSession() {
+  if(sessionEnding)return;sessionEnding=true;
+  try{broadcast("session_ending",new JSONObject().put("sessionId",state.getJSONObject("chat").optString("sessionId")).put("reason","shutdown"),false);}catch(Exception ignored){}
+  try{change(next->{next.put("messages",new JSONArray()).put("files",new JSONArray()).put("operations",new JSONArray());JSONObject chat=next.getJSONObject("chat");chat.put("revision",0).put("deletionRevision",0).put("epoch",0);});}catch(Exception ignored){}
+  File[] local=files.listFiles();if(local!=null)for(File file:local)try{file.delete();}catch(Exception ignored){}
  }
  private static JSONObject operationResponse(JSONObject operation) throws Exception {
   JSONObject response=new JSONObject(operation.toString()).put("operationId",operation.optString("id"));JSONObject result=operation.optJSONObject("result");
@@ -488,7 +506,7 @@ final class ChatHost implements AutoCloseable {
    final String status=cleanupPending?"partial":"done";final JSONObject result=new JSONObject().put("revision",revision[0]).put("deletionRevision",deletionRevision[0]).put("epoch",epoch[0]).put("messages",active[0]).put("files",fileIds.size()).put("bytes",bytes[0]).put("freedBytes",freedBytes).put("tempFiles",tempRemaining).put("cleanupPending",cleanupPending);
    synchronized(this){change(next->{JSONObject op=find(next.getJSONArray("operations"),"id",operationId);if(op!=null)op.put("status",status).put("updatedAt",now()).put("result",result);});}
    logEvent("chat_cleared",operationId,remote);
-   broadcast("chat_cleared",new JSONObject().put("chatId","legacy").put("revision",revision[0]).put("deletionRevision",deletionRevision[0]).put("epoch",epoch[0]).put("operationId",operationId).put("freedBytes",freedBytes).put("tempFiles",tempRemaining).put("cleanupPending",cleanupPending),false);
+   broadcast("chat_cleared",new JSONObject().put("chatId","legacy").put("sessionId",state.getJSONObject("chat").optString("sessionId")).put("revision",revision[0]).put("deletionRevision",deletionRevision[0]).put("epoch",epoch[0]).put("operationId",operationId).put("freedBytes",freedBytes).put("tempFiles",tempRemaining).put("cleanupPending",cleanupPending),false);
    request.json(202,new JSONObject().put("operationId",operationId).put("status",status).put("revision",revision[0]).put("deletionRevision",deletionRevision[0]).put("epoch",epoch[0]).put("freedBytes",freedBytes).put("tempFiles",tempRemaining).put("cleanupPending",cleanupPending).toString());return;
   }
   if(route.startsWith("/api/operations/")&&request.method.equals("GET")){
@@ -686,6 +704,7 @@ final class ChatHost implements AutoCloseable {
   try(FileInputStream in=new FileInputStream(disk)){in.getChannel().position(start);MiniHttp.copy(in,request.out,end-start+1);}
  }
  public void close(){
+  endEphemeralSession();
   for(Stream stream:new ArrayList<>(streams.values()))closeStream(stream);
   http.close();sse.shutdownNow();
  }

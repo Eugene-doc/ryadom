@@ -19,7 +19,7 @@ function applyState(data,generation=stateGeneration){
  me=data.me;devices=data.devices;pairing=data.pairing;addresses=data.server.addresses;pendingRequests=data.pendingRequests||[];fingerprint=data.server.fingerprint||'';tlsEnabled=!!data.server.tls;storage=data.storage||null;
  const incoming=data.chat||{id:'legacy',revision:0,deletionRevision:0,epoch:0};
  if(chat&&(incoming.revision<chat.revision||(incoming.deletionRevision??0)<(chat.deletionRevision??0)))return;
- const reset=chat&&(chat.id!==incoming.id||(chat.deletionRevision??0)!==(incoming.deletionRevision??0)||chat.epoch!==incoming.epoch);chat=incoming;
+ const reset=chat&&(chat.id!==incoming.id||chat.sessionId!==incoming.sessionId||(chat.deletionRevision??0)!==(incoming.deletionRevision??0)||chat.epoch!==incoming.epoch);chat=incoming;
  if(reset){messages.clear();canLoadOlder=false;stateGeneration++;}
  $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;$('header-clear-chat-button').hidden=!me.host;
  $('app-version').textContent=`Приложение ${(typeof window.ryadom?.appVersion==='function'?window.ryadom.appVersion():window.ryadom?.appVersion)||'—'} · главное ${data.server.version||'—'}`;
@@ -37,9 +37,10 @@ function connectEvents(){
  events?.close();events=new EventSource('/api/events');
  events.onopen=()=>{online=true;renderConnection();sync();};
  events.onerror=()=>{online=false;renderConnection();sync();};
- events.addEventListener('message',e=>{const m=JSON.parse(e.data);if(chat&&((typeof m.revision==='number'&&m.revision<chat.revision)||(typeof m.epoch==='number'&&m.epoch<chat.epoch)))return;if(chat&&typeof m.epoch==='number'&&m.epoch>chat.epoch){messages.clear();canLoadOlder=false;}stateGeneration++;if(chat){chat.revision=Math.max(chat.revision??0,m.revision??0);if(typeof m.epoch==='number')chat.epoch=Math.max(chat.epoch??0,m.epoch);}messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
+ events.addEventListener('message',e=>{const m=JSON.parse(e.data);if(chat&&m.sessionId&&chat.sessionId&&m.sessionId!==chat.sessionId)return;if(chat&&((typeof m.revision==='number'&&m.revision<chat.revision)||(typeof m.epoch==='number'&&m.epoch<chat.epoch)))return;if(chat&&typeof m.epoch==='number'&&m.epoch>chat.epoch){messages.clear();canLoadOlder=false;}stateGeneration++;if(chat){chat.revision=Math.max(chat.revision??0,m.revision??0);if(typeof m.epoch==='number')chat.epoch=Math.max(chat.epoch??0,m.epoch);}messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
  events.addEventListener('message_deleted',e=>{const d=JSON.parse(e.data);if(chat&&(d.deletionRevision??0)<(chat.deletionRevision??0))return;stateGeneration++;const old=messages.get(d.id);messages.delete(d.id);if(chat){chat.revision=Math.max(chat.revision??0,d.revision??0);chat.deletionRevision=Math.max(chat.deletionRevision??0,d.deletionRevision??0);}if(old?.file&&$('full-image').src.includes(old.file.id)&&$('image-dialog').open)$('image-dialog').close();const node=$('messages').querySelector(`[data-key="${CSS.escape(d.id)}"]`);node?.remove();renderMessages();});
  events.addEventListener('chat_cleared',e=>{applyChatCleared(JSON.parse(e.data),true);});
+ events.addEventListener('session_ending',e=>{const d=JSON.parse(e.data);if(chat&&d.sessionId&&chat.sessionId&&d.sessionId!==chat.sessionId)return;messages.clear();canLoadOlder=false;if($('clear-dialog').open)$('clear-dialog').close();if($('image-dialog').open)$('image-dialog').close();renderMessages(true);toast('Главное устройство завершает чат. История очищается у всех устройств.');});
  events.addEventListener('devices',e=>{devices=JSON.parse(e.data);renderDevices();});
  events.addEventListener('pair_request',e=>{if(me?.host){sync();toast('Новый запрос на подключение');if(!$('settings-dialog').open)openSettings();}});
  events.addEventListener('pairing',()=>{if(me?.host)sync();});
@@ -120,6 +121,7 @@ function clearResultText(result){return result.cleanupPending?`История о
 function finishClearUi(result){const operation=result.operationId||'';if($('clear-dialog').open)$('clear-dialog').close();if($('image-dialog').open)$('image-dialog').close();if(!operation||operation!==lastClearNoticeOperation){lastClearNoticeOperation=operation||null;toast(clearResultText(result));}}
 function applyChatCleared(result,fromEvent=false){
  if(!result)return false;
+ if(chat&&result.sessionId&&chat.sessionId&&result.sessionId!==chat.sessionId)return false;
  const operation=result.operationId||'';
  if(operation&&operation===lastClearOperationId)return false;
  if(!chat){lastClearOperationId=operation||null;finishClearUi(result);return false;}
