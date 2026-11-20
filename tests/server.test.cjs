@@ -63,6 +63,9 @@ test('Protocol 3 exposes the legacy chat revision',async()=>{
  assert.equal(typeof data.chat.revision,'number');
  assert.equal(typeof data.chat.deletionRevision,'number');
  assert.equal(typeof data.chat.epoch,'number');
+ assert.equal(typeof data.chat.sessionId,'string');
+ assert.equal(typeof data.chat.term,'number');
+ assert.equal(typeof data.chat.hostDeviceId,'string');
  assert.equal(data.server.protocol,3);
 });
 

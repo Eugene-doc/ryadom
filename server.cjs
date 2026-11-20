@@ -14,6 +14,7 @@ const MAX_FILE = 512 * 1024 * 1024;
 const PORT = Number(process.env.RYADOM_PORT || 4280);
 const DATA = process.env.RYADOM_DATA || path.join(process.env.LOCALAPPDATA || os.homedir(), 'Ryadom');
 const NATIVE_KEY = process.env.RYADOM_NATIVE_KEY || '';
+const HOST_DEVICE_ID = process.env.RYADOM_DEVICE_ID || '';
 const SESSION_DAYS = Number(process.env.RYADOM_SESSION_DAYS || 30);
 const HOST_TOKEN_TTL = Number(process.env.RYADOM_HOST_TOKEN_TTL_MS || 120000);
 const PAIR_TTL = Number(process.env.RYADOM_PAIR_TTL_MS || 120000);
@@ -237,10 +238,10 @@ function beginEphemeralSession() {
  const chat = chatRow();
  const sessionId = crypto.randomBytes(16).toString('hex');
  const term = (chat.term || 0) + 1;
- db.prepare('UPDATE chats SET sessionId=?,term=?,hostDeviceId=? WHERE id=?').run(sessionId, term, host.id, 'legacy');
- writeSessionMarker({ state: 'ACTIVE', sessionId, term, hostDeviceId: host.id, created: now() });
+ db.prepare('UPDATE chats SET sessionId=?,term=?,hostDeviceId=? WHERE id=?').run(sessionId, term, HOST_DEVICE_ID || host.id, 'legacy');
+ writeSessionMarker({ state: 'ACTIVE', sessionId, term, hostDeviceId: HOST_DEVICE_ID || host.id, created: now() });
  if (crashed) console.log('Предыдущая сессия Рядом завершилась аварийно; остатки истории очищены.');
- return { sessionId, term, hostDeviceId: host.id };
+ return { sessionId, term, hostDeviceId: HOST_DEVICE_ID || host.id };
 }
 function endEphemeralSession() {
  if (sessionEnding) return;

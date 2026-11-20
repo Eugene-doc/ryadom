@@ -25,7 +25,7 @@ public final class HostService extends Service {
    network=LanNetwork.select(this,null);
    WifiManager wifi=(WifiManager)getApplicationContext().getSystemService(WIFI_SERVICE);multicast=wifi.createMulticastLock("Ryadom discovery");multicast.setReferenceCounted(false);multicast.acquire();
    wake=((PowerManager)getSystemService(POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"Ryadom:host");wake.acquire();
-   host=new ChatHost(new File(getFilesDir(),"host"),network.ips(),4280,name->{try(InputStream in=getAssets().open(name);ByteArrayOutputStream out=new ByteArrayOutputStream()){MiniHttp.copy(in,out,-1);return out.toByteArray();}},()->new Handler(getMainLooper()).post(this::stopSelf));
+   host=new ChatHost(new File(getFilesDir(),"host"),network.ips(),4280,name->{try(InputStream in=getAssets().open(name);ByteArrayOutputStream out=new ByteArrayOutputStream()){MiniHttp.copy(in,out,-1);return out.toByteArray();}},()->new Handler(getMainLooper()).post(this::stopSelf),DeviceIdentity.load(this).id);
    List<Integer> prefixes=new ArrayList<>();for(LinkAddress address:network.addresses)prefixes.add(address.getPrefixLength());
    try{discovery=new Discovery(network.ips(),prefixes,Build.MODEL,network.network::bindSocket);}catch(Exception ignored){}
    callback=new ConnectivityManager.NetworkCallback(){@Override public void onLost(Network lost){if(lost.equals(network.network)){lastError="Домашняя сеть отключилась. Запустите чат заново после подключения к Wi-Fi.";new Handler(getMainLooper()).post(()->stopSelf());}}};

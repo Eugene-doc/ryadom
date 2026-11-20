@@ -136,7 +136,7 @@ public final class MainActivity extends Activity {
   card.addView(text("Адрес указан в разделе «Подключить устройство». ПК может быть подключён кабелем, телефон — по Wi-Fi. Нужна одна подсеть без изоляции клиентов.",11,MUTED));
   errorText=text(error,12,0xffa65042);space(card,12);card.addView(errorText);space(card,12);
   connectButton=new Button(this);connectButton.setText("Подключиться  →");connectButton.setTextSize(14);connectButton.setAllCaps(false);connectButton.setTextColor(Color.WHITE);connectButton.setBackground(box(GREEN,10));card.addView(connectButton,params(-1,dp(49)));connectButton.setOnClickListener(v->connect());
-  space(card,20);card.addView(text("Happ может оставаться включённым. История хранится на выбранном главном устройстве и не переносится автоматически.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.3.3  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
+  space(card,20);card.addView(text("Happ может оставаться включённым. История живёт до завершения главного чата.",10,MUTED));space(outer,25);TextView caption=text("Рядом 0.3.3  ·  Домашняя сеть напрямую",11,MUTED);caption.setGravity(Gravity.CENTER);outer.addView(caption);
  }
  /** Reject DNS names, public addresses, credentials, paths and ambiguous IPv4 forms. */
  static String validateServer(String value) throws Exception {
@@ -151,7 +151,7 @@ public final class MainActivity extends Activity {
  }
  private void connect(){
   try{rejectSelf(validateServer(serverInput.getText().toString()));}catch(Exception e){errorText.setText(e.getMessage());return;}
-  if(HostService.active!=null){new AlertDialog.Builder(this).setTitle("Остановить чат на телефоне?").setMessage("Другие устройства отключатся. История сохранится на телефоне. Затем вы подключитесь к другому главному устройству.").setNegativeButton("Отмена",null).setPositiveButton("Продолжить",(dialog,which)->{startService(new Intent(this,HostService.class).setAction("stop"));connectClient();}).show();return;}
+  if(HostService.active!=null){new AlertDialog.Builder(this).setTitle("Остановить чат на телефоне?").setMessage("Другие устройства отключатся. История текущего чата будет очищена у всех. Затем вы подключитесь к другому главному устройству.").setNegativeButton("Отмена",null).setPositiveButton("Продолжить",(dialog,which)->{startService(new Intent(this,HostService.class).setAction("stop"));connectClient();}).show();return;}
   connectClient();
  }
  private void rejectSelf(String target) throws Exception {
@@ -217,7 +217,7 @@ public final class MainActivity extends Activity {
  }
  private void waitForHost(int generation,int attempt){new Handler(getMainLooper()).postDelayed(()->{if(isFinishing()||screenGeneration!=generation)return;if(HostService.active!=null&&HostService.active.host!=null){openHost();return;}if(!HostService.lastError.isEmpty()||attempt>50){connectButton.setEnabled(true);errorText.setText(HostService.lastError.isEmpty()?"Не удалось запустить чат. Повторите попытку.":HostService.lastError);return;}waitForHost(generation,attempt+1);},150);}
  private void openHost(){if(proxy!=null){proxy.close();proxy=null;}hosting=true;base="http://127.0.0.1:4280";showChat();}
- private void changeRole(){new AlertDialog.Builder(this).setTitle("Выбрать главное устройство заново?").setMessage(hosting?"Чат на телефоне остановится. Переписка сохранится здесь. Неотправленный текст сохраните перед выходом.":"Вы выйдете из текущего чата. Неотправленный текст сохраните перед выходом.").setNegativeButton("Остаться",null).setPositiveButton("Выбрать",(d,w)->{if(hosting)startService(new Intent(this,HostService.class).setAction("stop"));showConnect("");}).show();}
+ private void changeRole(){new AlertDialog.Builder(this).setTitle("Выбрать главное устройство заново?").setMessage(hosting?"Чат на телефоне остановится. История текущего чата будет очищена у всех. Неотправленный текст сохраните перед выходом.":"Вы выйдете из текущего чата. Неотправленный текст сохраните перед выходом.").setNegativeButton("Остаться",null).setPositiveButton("Выбрать",(d,w)->{if(hosting)startService(new Intent(this,HostService.class).setAction("stop"));showConnect("");}).show();}
  private boolean sameServer(String url){try{URL a=new URL(url),b=new URL(base);return a.getProtocol().equals("http")&&a.getHost().equals(b.getHost())&&a.getPort()==b.getPort()&&a.getUserInfo()==null;}catch(Exception e){return false;}}
  private void showChat(){
   screenGeneration++;root.removeAllViews();

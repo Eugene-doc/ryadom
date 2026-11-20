@@ -10,7 +10,14 @@ test('Windows shell uses WebView2 identity and embedded SDK', () => {
  const window = read('windows/ChatWindow.cs');
  const launcher = read('windows/Launcher.cs');
  const build = read('scripts/build-windows.cjs');
+ const identity = read('windows/DeviceIdentity.cs');
  assert.match(window, /WebView2Bootstrap/);
+ assert.match(identity, /device-id/);
+ assert.match(identity, /device-token/);
+ assert.match(identity, /d1-/);
+ assert.match(launcher, /RYADOM_DEVICE_ID/);
+ assert.match(launcher, /RYADOM_DEVICE_TOKEN/);
+ assert.match(build, /DeviceIdentity\.cs/);
  assert.match(window, /SetLoaderDllFolderPath/);
  assert.match(window, /Downloads.*Рядом|Рядом.*Downloads/s);
  assert.match(window, /Guid\.NewGuid/);

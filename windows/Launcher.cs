@@ -16,6 +16,7 @@ using System.Windows.Forms;
 namespace Ryadom {
  internal sealed class ChatApplication : ApplicationContext {
   private static readonly string Data=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Ryadom");
+  private static readonly DeviceIdentity Device=DeviceIdentity.Load(Data);
   private static bool chooseAgain;
   private readonly NotifyIcon tray;
   private readonly System.Windows.Forms.Timer timer=new System.Windows.Forms.Timer();
@@ -70,13 +71,13 @@ namespace Ryadom {
    File.Delete(Path.Combine(Data,"choose-role"));
    tray=new NotifyIcon{Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath),Text=choice.Hosting?"Рядом · главное устройство":"Рядом · подключён к чату"};
    var menu=new ContextMenuStrip();menu.Items.Add("Открыть чат",null,(s,e)=>OpenChat(false));if(choice.Hosting){menu.Items.Add("Подключить устройство",null,(s,e)=>OpenChat(true));menu.Items.Add("Настроить брандмауэр",null,(s,e)=>FirewallAdvisor.Configure(Data));menu.Items.Add("Проверить брандмауэр и сеть",null,(s,e)=>FirewallAdvisor.ShowReport(Data));}
-   menu.Items.Add("Выбрать другое главное устройство",null,(s,e)=>{if(!choice.Hosting||MessageBox.Show("Остановить этот чат и выбрать главное устройство заново? История останется на этом компьютере.","Рядом",MessageBoxButtons.OKCancel)==DialogResult.OK)Stop(true);});
+   menu.Items.Add("Выбрать другое главное устройство",null,(s,e)=>{if(!choice.Hosting||MessageBox.Show("Остановить этот чат и выбрать главное устройство заново? История будет очищена у всех устройств.","Рядом",MessageBoxButtons.OKCancel)==DialogResult.OK)Stop(true);});
    menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Создать ярлык на рабочем столе",null,(s,e)=>CreateShortcut());menu.Items.Add("Как закрепить на панели задач",null,(s,e)=>MessageBox.Show("Создайте ярлык и перетащите его на панель задач, либо закрепите открытое окно Рядом: правый клик по значку на панели задач → «Закрепить на панели задач».","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Information));menu.Items.Add("Папка с данными",null,(s,e)=>Process.Start("explorer.exe",Data));menu.Items.Add("Выключить Рядом",null,(s,e)=>Stop(false));tray.ContextMenuStrip=menu;tray.DoubleClick+=(s,e)=>OpenChat(false);tray.Visible=true;
    string bin=Path.Combine(Data,"bin");Directory.CreateDirectory(bin);string digest;using(var reader=new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("HostHash")))digest=reader.ReadToEnd().Trim();
    string executable=Path.Combine(bin,"RyadomHost-"+digest.Substring(0,12)+".exe");
    if(!File.Exists(executable)){string temp=executable+".tmp";using(var input=Assembly.GetExecutingAssembly().GetManifestResourceStream("Host"))using(var output=File.Create(temp))input.CopyTo(output);File.Move(temp,executable);}
    var start=new ProcessStartInfo(executable){UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=Data};
-   start.EnvironmentVariables["RYADOM_DATA"]=Data;start.EnvironmentVariables["RYADOM_PORT"]="4280";start.EnvironmentVariables["RYADOM_NO_OPEN"]="1";start.EnvironmentVariables["RYADOM_PARENT_PID"]=Process.GetCurrentProcess().Id.ToString();start.EnvironmentVariables["RYADOM_NATIVE_KEY"]=bridgeKey;start.EnvironmentVariables["RYADOM_LAN_STATE"]=Path.Combine(Data,"lan-state.json");start.EnvironmentVariables["RYADOM_ROLE_SIGNAL"]=Path.Combine(Data,"choose-role");
+   start.EnvironmentVariables["RYADOM_DATA"]=Data;start.EnvironmentVariables["RYADOM_PORT"]="4280";start.EnvironmentVariables["RYADOM_NO_OPEN"]="1";start.EnvironmentVariables["RYADOM_PARENT_PID"]=Process.GetCurrentProcess().Id.ToString();start.EnvironmentVariables["RYADOM_NATIVE_KEY"]=bridgeKey;start.EnvironmentVariables["RYADOM_LAN_STATE"]=Path.Combine(Data,"lan-state.json");start.EnvironmentVariables["RYADOM_ROLE_SIGNAL"]=Path.Combine(Data,"choose-role");start.EnvironmentVariables["RYADOM_DEVICE_ID"]=Device.Id;start.EnvironmentVariables["RYADOM_DEVICE_TOKEN"]=Device.Token;
    if(choice.Hosting){
     string fingerprint;
     hostCert=TlsIdentity.EnsureHostCertificate(Data,out fingerprint);

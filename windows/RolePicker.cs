@@ -23,7 +23,7 @@ namespace Ryadom {
    address.Bounds=new Rectangle(32,367,305,30);address.Text=previous;Controls.Add(address);var join=new Button{Text="Подключиться",Bounds=new Rectangle(348,364,144,36)};Controls.Add(join);join.Click+=(s,e)=>Join();
    status.Bounds=new Rectangle(32,412,460,65);status.ForeColor=Color.FromArgb(130,102,78);Controls.Add(status);
    if(LanInterfaces.IsLocal(HostOf(previous))){address.Text="";status.Text="Сохранённый адрес относится к этому компьютеру. Выберите другое главное устройство.";}
-   Controls.Add(new Label{Text="История хранится на выбранном главном устройстве.\nСмена главного не переносит историю автоматически.\nHapp может оставаться включённым.",Bounds=new Rectangle(32,478,465,65),ForeColor=Color.Gray,Font=new Font("Segoe UI",9)});
+   Controls.Add(new Label{Text="История принадлежит текущему чату.\nПри завершении главного она очищается у всех устройств.\nHapp может оставаться включённым.",Bounds=new Rectangle(32,478,465,65),ForeColor=Color.Gray,Font=new Font("Segoe UI",9)});
    Shown+=async(s,e)=>await Search();AcceptButton=join;
   }
   private static string HostOf(string value){if(string.IsNullOrWhiteSpace(value))return "";string text=value.Trim();int colon=text.LastIndexOf(':');return colon>0?text.Substring(0,colon):text;}

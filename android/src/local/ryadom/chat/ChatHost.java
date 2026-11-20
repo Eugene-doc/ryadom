@@ -39,10 +39,14 @@ final class ChatHost implements AutoCloseable {
  private final long sessionTtl,hostTokenTtl,pairTtl,maxTotal,maxDevice,minFree;
  private final int msgPerMin,uploadPerMin,maxPending,pairAttempts;
  private final String nativeKey;
+ private final String hostId;
  private final Runnable stop;private final MiniHttp http;private boolean sessionEnding;
  private final ExecutorService sse=Executors.newCachedThreadPool(new ThreadFactory(){public Thread newThread(Runnable run){Thread thread=new Thread(run,"Ryadom SSE");thread.setDaemon(true);return thread;}});
  ChatHost(File dir,List<String> ips,int port,Assets a,Runnable stopRequest) throws Exception {
-  directory=dir;files=new File(dir,"files");files.mkdirs();stateFile=new File(dir,"chat.json");assets=a;addresses=new ArrayList<>(ips);this.port=port;stop=stopRequest;
+  this(dir,ips,port,a,stopRequest,"");
+ }
+ ChatHost(File dir,List<String> ips,int port,Assets a,Runnable stopRequest,String deviceId) throws Exception {
+  directory=dir;files=new File(dir,"files");files.mkdirs();stateFile=new File(dir,"chat.json");assets=a;addresses=new ArrayList<>(ips);this.port=port;stop=stopRequest;hostId=deviceId==null?"":deviceId;
   nativeKey=value("RYADOM_NATIVE_KEY","");
   sessionTtl=number("RYADOM_SESSION_DAYS",30)*86400000L;
   hostTokenTtl=number("RYADOM_HOST_TOKEN_TTL_MS",120000);
@@ -297,7 +301,7 @@ final class ChatHost implements AutoCloseable {
   change(next->{
    JSONObject chat=next.getJSONObject("chat");term[0]=chat.optLong("term",0)+1;
    next.put("messages",new JSONArray()).put("files",new JSONArray()).put("operations",new JSONArray());
-   chat.put("sessionId",sessionId).put("term",term[0]).put("hostDeviceId",host.getString("id")).put("revision",0).put("deletionRevision",0).put("epoch",0);
+   chat.put("sessionId",sessionId).put("term",term[0]).put("hostDeviceId",hostId.isEmpty()?host.getString("id"):hostId).put("revision",0).put("deletionRevision",0).put("epoch",0);
   });
   File[] local=files.listFiles();if(local!=null)for(File file:local)try{file.delete();}catch(Exception ignored){}
  }
