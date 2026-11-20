@@ -385,6 +385,7 @@ final class ChatHost implements AutoCloseable {
   }
   if(route.equals("/api/auth")&&request.method.equals("POST")){
    JSONObject body=body(request);
+   if(body.optInt("protocol",0)!=PROTOCOL)throw new MiniHttp.Failure(426,"Обновите Рядом на этом устройстве до протокола 4");
    String requestedId=body.optString("deviceId","").toLowerCase(Locale.ROOT),requestedToken=body.optString("deviceToken","").toLowerCase(Locale.ROOT);
    if(!requestedId.matches("d1-[0-9a-f]{32}")||!requestedToken.matches("[0-9a-f]{64}"))throw new MiniHttp.Failure(400,"Некорректная идентичность устройства");
    JSONObject device;String raw;
@@ -395,6 +396,7 @@ final class ChatHost implements AutoCloseable {
   if(route.equals("/api/pair")&&request.method.equals("POST")){
    synchronized(this){long[] attempt=attempts.get(remote);long nowMs=System.currentTimeMillis();if(attempt==null||attempt[1]<nowMs){attempt=new long[]{0,nowMs+60000};attempts.put(remote,attempt);}if(++attempt[0]>pairAttempts)throw new MiniHttp.Failure(429,"Слишком много попыток. Подождите минуту");}
    JSONObject body=body(request);
+   if(body.optInt("protocol",0)!=PROTOCOL)throw new MiniHttp.Failure(426,"Обновите Рядом на этом устройстве до протокола 4");
    final String requestId;final String deviceName,finalDeviceId,finalTokenHash;
    synchronized(this){
     prunePairs();

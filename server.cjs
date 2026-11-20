@@ -375,6 +375,7 @@ const server = http.createServer(async (req, res) => {
   }
   if (route === '/api/auth' && req.method === 'POST') {
    const body = await json(req);
+   if (Number(body.protocol) !== PROTOCOL) throw error(426, 'Обновите Рядом на этом устройстве до протокола 4');
    const deviceId = String(body.deviceId || '').toLowerCase();
    const token = String(body.deviceToken || '').toLowerCase();
    if (!/^d1-[0-9a-f]{32}$/.test(deviceId) || !/^[0-9a-f]{64}$/.test(token)) throw error(400, 'Некорректная идентичность устройства');
@@ -389,6 +390,7 @@ const server = http.createServer(async (req, res) => {
    attempts.set(ip, entry); if (++entry.count > PAIR_ATTEMPTS_PER_MIN) throw error(429, 'Слишком много попыток. Подождите минуту');
    prunePairs();
    const body = await json(req);
+   if (Number(body.protocol) !== PROTOCOL) throw error(426, 'Обновите Рядом на этом устройстве до протокола 4');
    if (pairingDisabled()) throw error(403, 'Код истёк. Создайте новый код на главном устройстве');
    if (!safeEqual(String(body.code || '').replace(/\s/g, ''), pairing.code)) throw error(403, 'Неверный код подключения');
    const name = cleanName(body.name).slice(0, 40); if (!body.name?.trim()) throw error(400, 'Укажите имя устройства');

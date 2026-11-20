@@ -99,7 +99,7 @@ public final class SessionSecurityTest {
   return pairing.json().getString("code");
  }
  private static Device pair(int port,String hostCookie,String code,String name) throws Exception {
-  Response pending=request(port,"POST","/api/pair","{\"name\":\""+name+"\",\"code\":\""+code+"\"}",null);
+  Response pending=request(port,"POST","/api/pair","{\"name\":\""+name+"\",\"code\":\""+code+"\",\"protocol\":4}",null);
   check(pending.status==202,"pair request: "+pending.status);
   String requestId=pending.json().getString("requestId");
   check(request(port,"POST","/api/host/pair/approve","{\"requestId\":\""+requestId+"\"}",hostCookie).status==200,"pair approve");

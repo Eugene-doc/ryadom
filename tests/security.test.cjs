@@ -60,7 +60,7 @@ async function pairingCode(host){
 }
 async function pairRequest(host,name='Телефон'){
  const code=await pairingCode(host);
- const {r,data}=await req('/api/pair',{method:'POST',body:{name,code}});
+ const {r,data}=await req('/api/pair',{method:'POST',body:{name,code,protocol:4}});
  assert.equal(r.status,202,'pairing must wait for host approval');
  assert.equal(data.pending,true);
  return data.requestId;
@@ -98,9 +98,9 @@ test('Одноразовый токен входа главного',async()=>{
 test('Спаривание требует подтверждения главного и код одноразовый',async()=>{
  const host=await login();
  const code=await pairingCode(host);
- const pending=await req('/api/pair',{method:'POST',body:{name:'Плохой',code}});
+ const pending=await req('/api/pair',{method:'POST',body:{name:'Плохой',code,protocol:4}});
  assert.equal(pending.r.status,202);
- const reused=await req('/api/pair',{method:'POST',body:{name:'Ещё',code}});
+ const reused=await req('/api/pair',{method:'POST',body:{name:'Ещё',code,protocol:4}});
  assert.equal(reused.r.status,403);
  const beforeApprove=await fetch(`${base}/api/pair/status?requestId=${pending.data.requestId}`);
  assert.equal(beforeApprove.status,202);

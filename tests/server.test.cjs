@@ -42,7 +42,7 @@ async function pairingCode(cookie){
 }
 async function pairDevice(cookie,name,customCode){
  const code=customCode||await pairingCode(cookie);
- const pending=await call('/api/pair','POST',{name,code},'');
+ const pending=await call('/api/pair','POST',{name,code,protocol:4},'');
  assert.equal(pending.r.status,202,JSON.stringify(pending.data)+logs);
  const approve=await call('/api/host/pair/approve','POST',{requestId:pending.data.requestId},cookie);
  assert.equal(approve.r.status,200,JSON.stringify(approve.data)+logs);
@@ -88,8 +88,8 @@ test('Private chat end-to-end',async t=>{
  await t.test('Pair a second device with host approval and hide owner controls',async()=>{
   const state=(await call('/api/state')).data;
   assert.ok(state.pairing.code);
-  assert.equal((await call('/api/pair','POST',{name:'Android',code:'00000000'},'')).r.status,403);
-  const pending=await call('/api/pair','POST',{name:'Мой Android',code:state.pairing.code},'');
+  assert.equal((await call('/api/pair','POST',{name:'Android',code:'00000000',protocol:4},'')).r.status,403);
+  const pending=await call('/api/pair','POST',{name:'Мой Android',code:state.pairing.code,protocol:4},'');
   assert.equal(pending.r.status,202);
   assert.equal((await call('/api/state','GET',undefined,'')).r.status,401);
   const approved=await call('/api/host/pair/approve','POST',{requestId:pending.data.requestId});
@@ -157,7 +157,7 @@ test('Private chat end-to-end',async t=>{
  });
  await t.test('Close pairing and revoke device access',async()=>{
   await call('/api/host/pairing','POST',{enabled:false});
-  assert.equal((await call('/api/pair','POST',{name:'test',code:'12345678'},'')).r.status,403);
+  assert.equal((await call('/api/pair','POST',{name:'test',code:'12345678',protocol:4},'')).r.status,403);
   assert.equal((await call(`/api/host/devices/${clientId}`,'DELETE',{})).r.status,200);
   assert.equal((await call('/api/state','GET',undefined,client)).r.status,401);
   assert.equal((await fetch(base+'/files/'+fileId,{headers:{Cookie:client}})).status,401);

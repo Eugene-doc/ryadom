@@ -36,7 +36,7 @@ public final class FunctionalTest {
  private static String pair(int port,String hostCookie,String name) throws Exception {
   Response state=call(port,"GET","/api/state",null,hostCookie);
   String code=new JSONObject(state.body).getJSONObject("pairing").getString("code");
-  Response pending=call(port,"POST","/api/pair",new JSONObject().put("name",name).put("code",code).toString(),null);
+  Response pending=call(port,"POST","/api/pair",new JSONObject().put("name",name).put("code",code).put("protocol",4).toString(),null);
   check(pending.status==202,"pair: "+pending.status+" "+pending.body);
   String requestId=new JSONObject(pending.body).getString("requestId");
   Response approve=call(port,"POST","/api/host/pair/approve",new JSONObject().put("requestId",requestId).toString(),hostCookie);

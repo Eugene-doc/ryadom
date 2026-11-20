@@ -20,7 +20,7 @@ async function hostLogin(base,nativeKey,data){
 }
 async function approvedPair(proxyBase,hostBase,hostCookie,name){
  const state=(await api(hostBase,'/api/state','GET',undefined,hostCookie)).body;
- const pair=await api(proxyBase,'/api/pair','POST',{name,code:state.pairing.code});
+ const pair=await api(proxyBase,'/api/pair','POST',{name,code:state.pairing.code,protocol:4});
  assert.equal(pair.r.status,202,'pair: '+JSON.stringify(pair.body));
  const approved=await api(hostBase,'/api/host/pair/approve','POST',{requestId:pair.body.requestId},hostCookie);
  assert.equal(approved.r.status,200,'approve: '+JSON.stringify(approved.body));
