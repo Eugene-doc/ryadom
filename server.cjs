@@ -206,7 +206,7 @@ function pairingDisabled() { return pairing.expires === 0 || Date.now() > pairin
 function hostDevice() {
  let d = db.prepare('SELECT * FROM devices WHERE host=1').get();
  if (!d) {
-  db.prepare('INSERT INTO devices (id,name,token,host,created) VALUES (?,?,?,1,?)').run(crypto.randomUUID(), 'Мой компьютер', sha(crypto.randomBytes(32).toString('hex')), now());
+  db.prepare('INSERT INTO devices (id,name,token,host,created) VALUES (?,?,?,1,?)').run(HOST_DEVICE_ID || crypto.randomUUID(), 'Мой компьютер', sha(crypto.randomBytes(32).toString('hex')), now());
   d = db.prepare('SELECT * FROM devices WHERE host=1').get();
  }
  return d;

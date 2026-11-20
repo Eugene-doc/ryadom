@@ -265,7 +265,7 @@ final class ChatHost implements AutoCloseable {
  }
  private JSONObject hostDevice() throws Exception {
   synchronized(this){JSONObject existing=find(state.getJSONArray("devices"),"host","true");if(existing!=null)return existing;}
-  final JSONObject created=new JSONObject().put("id",UUID.randomUUID().toString()).put("name","Мой Android").put("host",true).put("created",now());
+  final JSONObject created=new JSONObject().put("id",hostId.isEmpty()?UUID.randomUUID().toString():hostId).put("name","Мой Android").put("host",true).put("created",now());
   synchronized(this){change(next->next.getJSONArray("devices").put(created));}
   return created;
  }
