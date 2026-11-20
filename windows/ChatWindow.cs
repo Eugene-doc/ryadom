@@ -69,9 +69,7 @@ namespace Ryadom {
    Panel toolbar = new Panel { Dock = DockStyle.Top, Height = 42, BackColor = Color.FromArgb(241, 243, 239) };
    version.AutoSize = true; version.Text = "Рядом " + VersionText();
    version.Location = new Point(14, 13); version.ForeColor = Color.FromArgb(90, 110, 94);
-   Button openDownloads = new Button { Text = "Открыть загрузки", AutoSize = true, Location = new Point(150, 7), FlatStyle = FlatStyle.Flat };
-   openDownloads.Click += (s, e) => OpenDownloads();
-   toolbar.Controls.Add(version); toolbar.Controls.Add(openDownloads);
+   toolbar.Controls.Add(version);
    view.Dock = DockStyle.Fill;
    Controls.Add(view); Controls.Add(toolbar);
    Directory.CreateDirectory(downloads);

@@ -2,7 +2,7 @@
 const $ = id => document.getElementById(id);
 const icon = name => { const s=document.createElementNS('http://www.w3.org/2000/svg','svg');const u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href',`#i-${name}`);s.append(u);return s; };
 const el = (tag,cls,text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, clearOperationId=null, stateGeneration=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
+let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, clearOperationId=null, lastClearOperationId=null, lastClearNoticeOperation=null, stateGeneration=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
 const uuid=()=>{if(crypto.randomUUID)return crypto.randomUUID();const b=crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;return [...b].map((v,i)=>([4,6,8,10].includes(i)?'-':'')+v.toString(16).padStart(2,'0')).join('');};
 const sizeText=n=>n<1024?`${n} Б`:n<1024*1024?`${(n/1024).toFixed(0)} КБ`:`${(n/1024/1024).toFixed(n<10*1024*1024?1:0)} МБ`;
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
@@ -11,7 +11,7 @@ async function api(route,method='GET',body){
  const data=await r.json();if(!r.ok){const e=new Error(data.error||'Не удалось выполнить действие');e.status=r.status;throw e;}return data;
 }
 async function copy(text){try{if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(text);else{const input=el('textarea');input.value=text;input.className='copy-helper';(document.querySelector('dialog[open]')||document.body).append(input);input.select();const ok=document.execCommand('copy');input.remove();if(!ok)throw new Error();}toast('Скопировано');}catch{toast('Не удалось скопировать. Выделите текст вручную.');}}
-function showJoin(){events?.close();events=null;me=null;chat=null;messages.clear();queue=[];pendingRequests=[];fingerprint='';storage=null;$('join-pending').hidden=true;$('join-error').textContent='';$('app').hidden=true;$('join-screen').hidden=false;$('device-name').value=/Android/i.test(navigator.userAgent)?'Мой Android':/iPhone|iPad/i.test(navigator.userAgent)?'Мой iPhone':'Мой ноутбук';if($('settings-dialog').open)$('settings-dialog').close();}
+function showJoin(){events?.close();events=null;me=null;chat=null;messages.clear();queue=[];pendingRequests=[];fingerprint='';storage=null;lastClearOperationId=null;lastClearNoticeOperation=null;$('header-clear-chat-button').hidden=true;$('join-pending').hidden=true;$('join-error').textContent='';$('app').hidden=true;$('join-screen').hidden=false;$('device-name').value=/Android/i.test(navigator.userAgent)?'Мой Android':/iPhone|iPad/i.test(navigator.userAgent)?'Мой iPhone':'Мой ноутбук';if($('settings-dialog').open)$('settings-dialog').close();}
 function showUpdate(){events?.close();events=null;me=null;$('app').hidden=true;$('join-screen').hidden=false;$('join-error').textContent='Версия главного устройства несовместима. Обновите Рядом на всех устройствах.';}
 function applyState(data,generation=stateGeneration){
  if(generation!==stateGeneration)return;
@@ -21,7 +21,7 @@ function applyState(data,generation=stateGeneration){
  if(chat&&(incoming.revision<chat.revision||(incoming.deletionRevision??0)<(chat.deletionRevision??0)))return;
  const reset=chat&&(chat.id!==incoming.id||(chat.deletionRevision??0)!==(incoming.deletionRevision??0)||chat.epoch!==incoming.epoch);chat=incoming;
  if(reset){messages.clear();canLoadOlder=false;stateGeneration++;}
- $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;
+ $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;$('header-clear-chat-button').hidden=!me.host;
  $('app-version').textContent=`Приложение ${(typeof window.ryadom?.appVersion==='function'?window.ryadom.appVersion():window.ryadom?.appVersion)||'—'} · главное ${data.server.version||'—'}`;
  renderDevices();renderMessages();renderPending();updateButtons();
 }
@@ -37,9 +37,9 @@ function connectEvents(){
  events?.close();events=new EventSource('/api/events');
  events.onopen=()=>{online=true;renderConnection();sync();};
  events.onerror=()=>{online=false;renderConnection();sync();};
- events.addEventListener('message',e=>{const m=JSON.parse(e.data);if(chat&&((typeof m.revision==='number'&&m.revision<chat.revision)||(typeof m.epoch==='number'&&m.epoch<chat.epoch)))return;stateGeneration++;if(chat)chat.revision=Math.max(chat.revision??0,m.revision??0);messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
+ events.addEventListener('message',e=>{const m=JSON.parse(e.data);if(chat&&((typeof m.revision==='number'&&m.revision<chat.revision)||(typeof m.epoch==='number'&&m.epoch<chat.epoch)))return;if(chat&&typeof m.epoch==='number'&&m.epoch>chat.epoch){messages.clear();canLoadOlder=false;}stateGeneration++;if(chat){chat.revision=Math.max(chat.revision??0,m.revision??0);if(typeof m.epoch==='number')chat.epoch=Math.max(chat.epoch??0,m.epoch);}messages.set(m.id,m);renderMessages(m.deviceId===me?.id);});
  events.addEventListener('message_deleted',e=>{const d=JSON.parse(e.data);if(chat&&(d.deletionRevision??0)<(chat.deletionRevision??0))return;stateGeneration++;const old=messages.get(d.id);messages.delete(d.id);if(chat){chat.revision=Math.max(chat.revision??0,d.revision??0);chat.deletionRevision=Math.max(chat.deletionRevision??0,d.deletionRevision??0);}if(old?.file&&$('full-image').src.includes(old.file.id)&&$('image-dialog').open)$('image-dialog').close();const node=$('messages').querySelector(`[data-key="${CSS.escape(d.id)}"]`);node?.remove();renderMessages();});
- events.addEventListener('chat_cleared',e=>{const d=JSON.parse(e.data);if(chat&&((d.epoch??0)<chat.epoch||(d.revision??0)<chat.revision))return;stateGeneration++;messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:Math.max(chat?.revision??0,d.revision??0),deletionRevision:Math.max(chat?.deletionRevision??0,d.deletionRevision??0),epoch:d.epoch??chat?.epoch??0};clearOperationId=null;if($('clear-dialog').open)$('clear-dialog').close();if($('image-dialog').open)$('image-dialog').close();renderMessages(true);toast(d.cleanupPending?'Чат очищен, но некоторые файлы остались на диске. Повторите очистку позже.':'Чат и файлы очищены');});
+ events.addEventListener('chat_cleared',e=>{applyChatCleared(JSON.parse(e.data),true);});
  events.addEventListener('devices',e=>{devices=JSON.parse(e.data);renderDevices();});
  events.addEventListener('pair_request',e=>{if(me?.host){sync();toast('Новый запрос на подключение');if(!$('settings-dialog').open)openSettings();}});
  events.addEventListener('pairing',()=>{if(me?.host)sync();});
@@ -116,20 +116,37 @@ async function openClearDialog(){
   $('clear-dialog').showModal();
  }catch(e){toast(e.message);}
 }
+function clearResultText(result){return result.cleanupPending?`История очищена, но не все файлы удалены (${sizeText(result.freedBytes||0)}). Повторите очистку позже.`:`История и файлы очищены. Освобождено ${sizeText(result.freedBytes||0)}.`;}
+function finishClearUi(result){const operation=result.operationId||'';if($('clear-dialog').open)$('clear-dialog').close();if($('image-dialog').open)$('image-dialog').close();if(!operation||operation!==lastClearNoticeOperation){lastClearNoticeOperation=operation||null;toast(clearResultText(result));}}
+function applyChatCleared(result,fromEvent=false){
+ if(!result)return false;
+ const operation=result.operationId||'';
+ if(operation&&operation===lastClearOperationId)return false;
+ if(!chat){lastClearOperationId=operation||null;finishClearUi(result);return false;}
+ if(typeof result.deletionRevision==='number')chat.deletionRevision=Math.max(chat.deletionRevision??0,result.deletionRevision);
+ const stale=(result.epoch??0)<chat.epoch||(result.revision??0)<chat.revision;
+ lastClearOperationId=operation||null;
+ if(stale){finishClearUi(result);return false;}
+ stateGeneration++;messages.clear();canLoadOlder=false;
+ chat={...chat,revision:result.revision??chat.revision,deletionRevision:result.deletionRevision??chat.deletionRevision??0,epoch:result.epoch??chat.epoch};
+ clearOperationId=null;
+ finishClearUi(result);
+ renderMessages(true);
+ return true;
+}
 async function clearChat(){
- const button=$('clear-confirm');button.disabled=true;const generation=stateGeneration;const operationId=clearOperationId||uuid();clearOperationId=operationId;
+ const button=$('clear-confirm');button.disabled=true;const operationId=clearOperationId||uuid();clearOperationId=operationId;
  try{
   const result=await api('/api/chat/clear','POST',{confirm:true,revision:clearRevision,operationId});
-  if(generation!==stateGeneration||(chat&&(result.epoch<chat.epoch||result.revision<chat.revision))){$('clear-dialog').close();return;}
-  stateGeneration++;messages.clear();canLoadOlder=false;chat={...(chat||{id:'legacy'}),revision:result.revision,deletionRevision:result.deletionRevision??chat?.deletionRevision??0,epoch:result.epoch};
-  if($('image-dialog').open)$('image-dialog').close();
-  $('clear-dialog').close();clearOperationId=null;renderMessages(true);
-  toast(result.cleanupPending?`История очищена, но не все файлы удалены (${sizeText(result.freedBytes)}).`:`Чат и файлы очищены. Освобождено ${sizeText(result.freedBytes)}.`);
- }catch(e){toast(e.message);}
+  applyChatCleared(result);
+ }catch(e){
+  $('clear-dialog').close();
+  toast(e.status===409?'История изменилась. Откройте очистку и подтвердите снова.':e.message);
+ }
  finally{button.disabled=false;}
 }
 $('delete-confirm').onclick=deleteMessage;$('delete-cancel').onclick=()=>$('delete-dialog').close();$('delete-cancel-x').onclick=()=>$('delete-dialog').close();
-$('clear-chat-button').onclick=openClearDialog;$('clear-confirm').onclick=clearChat;$('clear-cancel').onclick=()=>$('clear-dialog').close();$('clear-cancel-x').onclick=()=>$('clear-dialog').close();
+$('header-clear-chat-button').onclick=openClearDialog;$('clear-chat-button').onclick=openClearDialog;$('clear-confirm').onclick=clearChat;$('clear-cancel').onclick=()=>$('clear-dialog').close();$('clear-cancel-x').onclick=()=>$('clear-dialog').close();
 $('downloads-button').onclick=()=>{if(window.ryadom&&typeof window.ryadom.openDownloads==='function')window.ryadom.openDownloads();else toast('Папка загрузок доступна в приложении Рядом для Windows или Android');};
 let pendingText=null;
 $('message-form').onsubmit=async e=>{e.preventDefault();if(sending)return;const input=$('message-input');const text=input.value.trim();if(!text&&!queue.length)return;sending=true;updateButtons();

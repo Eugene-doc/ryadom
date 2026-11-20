@@ -205,6 +205,23 @@ test('clear rejects non-host', async () => {
  assert.equal(clear.r.status, 403);
 });
 
+test('clear removes orphan part files and reports deletion revision', async () => {
+ const host = await login();
+ const device = await pair(host, 'Временный файл');
+ await upload(device, 'kept.txt', 'clear-part-1');
+ const filesDir = [path.join(dir, 'files'), path.join(dir, 'host', 'files')].find(candidate => fs.existsSync(candidate));
+ assert.ok(filesDir, 'files directory not found');
+ fs.writeFileSync(path.join(filesDir, 'orphan.part'), 'partial');
+ const preview = await req('/api/chat/clear/preview', { cookie: host });
+ assert.ok(preview.data.tempFiles >= 1);
+ const clear = await req('/api/chat/clear', { method: 'POST', body: { confirm: true, revision: preview.data.revision, operationId: 'clear-part-op' }, cookie: host });
+ assert.equal(clear.r.status, 202, JSON.stringify(clear.data) + logs);
+ assert.equal(clear.data.status, 'done');
+ assert.equal(clear.data.tempFiles, 0);
+ assert.equal(typeof clear.data.deletionRevision, 'number');
+ assert.equal(fs.readdirSync(filesDir).filter(name => name.endsWith('.part')).length, 0);
+});
+
 test('clear reports a partial cleanup when a file cannot be unlinked', async () => {
  const host = await login();
  const device = await pair(host, 'Занятый файл');

@@ -8,7 +8,7 @@ const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const { DatabaseSync } = require('node:sqlite');
 const sea = require('node:sea');
-const VERSION = '0.3.2';
+const VERSION = '0.3.3';
 const PROTOCOL = 3;
 const MAX_FILE = 512 * 1024 * 1024;
 const PORT = Number(process.env.RYADOM_PORT || 4280);
@@ -63,16 +63,33 @@ function bumpRevision() { db.prepare('UPDATE chats SET revision=revision+1 WHERE
 function bumpDeletion() { db.prepare('UPDATE chats SET revision=revision+1,deletionRevision=deletionRevision+1 WHERE id=?').run('legacy'); return chatRow().revision; }
 function operationResponse(row) {
  let result = {}; try { result = JSON.parse(row.result || '{}'); } catch {}
- return { id: row.id, type: row.type, chatId: row.chatId, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt, error: row.error, ...result };
+ return { id: row.id, operationId: row.id, type: row.type, chatId: row.chatId, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt, error: row.error, ...result };
 }
 function reconcileClearOperations() {
- const pending = db.prepare("SELECT count(*) AS n FROM files WHERE state='deleting'").get().n;
- if (pending > 0) return;
+ const pendingFiles = db.prepare("SELECT count(*) AS n FROM files WHERE state='deleting'").get().n;
+ let pendingParts = 0; try { pendingParts = fs.readdirSync(uploads).filter(name => name.endsWith('.part')).length; } catch {}
+ if (pendingFiles > 0 || pendingParts > 0) return;
  for (const row of db.prepare("SELECT * FROM operations WHERE type='clear' AND status IN ('deleting','partial')").all()) {
   let result = {}; try { result = JSON.parse(row.result || '{}'); } catch {}
   result.cleanupPending = false;
+  result.tempFiles = 0;
   db.prepare("UPDATE operations SET status='done',updatedAt=?,result=?,error=NULL WHERE id=?").run(now(), JSON.stringify(result), row.id);
  }
+}
+function cleanClearFiles(files, tempNames) {
+ let freedBytes = 0, pending = false;
+ for (const file of files) {
+  try {
+   fs.rmSync(path.join(uploads, file.id), { force: true });
+   db.prepare('DELETE FROM files WHERE id=?').run(file.id);
+   freedBytes += file.size;
+  } catch { pending = true; }
+ }
+ let remaining = 0;
+ for (const name of tempNames) {
+  try { fs.rmSync(path.join(uploads, name), { force: true }); } catch { remaining++; }
+ }
+ return { freedBytes, pending, tempFiles: remaining };
 }
 const address = x => String(x || '').replace(/^::ffff:/, '');
 function safeEqual(a, b) { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); }
@@ -153,6 +170,7 @@ function addMessage(d, text, file, requestId, announce = true) {
  db.prepare('INSERT INTO messages (id,deviceId,deviceName,text,file,created,requestId,chatId) VALUES (?,?,?,?,?,?,?,?)').run(id, d.id, d.name, text, file ? JSON.stringify(file) : null, now(), requestId, 'legacy');
  const result = message(db.prepare('SELECT * FROM messages WHERE id=?').get(id));
  result.revision = bumpRevision();
+ result.epoch = chatRow().epoch;
  if (announce) broadcast('message', result); return result;
 }
 function cleanName(value) { return String(value || '').replace(/[\x00-\x1f\x7f/\\]/g, '').trim().slice(0, 180) || 'Файл'; }
@@ -380,31 +398,35 @@ const server = http.createServer(async (req, res) => {
    const existing = db.prepare('SELECT * FROM operations WHERE id=?').get(operationId);
    if (existing) return send(res, 200, operationResponse(existing));   const chat = chatRow();
    if (Number(body.revision) !== chat.revision) throw error(409, 'Чат изменился. Обновите данные и повторите');
-   const files = db.prepare("SELECT id,size FROM files WHERE chatId='legacy' AND state='ready'").all();
+   const files = db.prepare("SELECT id,size,state FROM files WHERE chatId='legacy' AND state IN ('ready','deleting')").all();
    const activeMessages = db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n;
    const bytes = files.reduce((sum, file) => sum + file.size, 0);
+   const tempNames = fs.readdirSync(uploads).filter(name => name.endsWith('.part'));
+   const tempBefore = tempNames.length;
    let next;
    db.exec('BEGIN');
    try {
     db.prepare("UPDATE messages SET deletedAt=?,deletedBy=?,text='',file=NULL WHERE deletedAt IS NULL").run(now(), d.id);
-    db.prepare("UPDATE files SET state='deleting' WHERE chatId='legacy' AND state='ready'").run();
+    db.prepare("UPDATE files SET state='deleting' WHERE chatId='legacy' AND state IN ('ready','deleting')").run();
     db.prepare('UPDATE chats SET revision=revision+1,deletionRevision=deletionRevision+1,epoch=epoch+1 WHERE id=?').run('legacy');
     next = chatRow();
-    db.prepare('INSERT INTO operations (id,type,chatId,actorId,status,createdAt,updatedAt,result,error) VALUES (?,?,?,?,?,?,?,?,?)').run(operationId, 'clear', 'legacy', d.id, 'deleting', now(), now(), JSON.stringify({ revision: next.revision, epoch: next.epoch, messages: activeMessages, files: files.length, bytes }), null);
+    db.prepare('INSERT INTO operations (id,type,chatId,actorId,status,createdAt,updatedAt,result,error) VALUES (?,?,?,?,?,?,?,?,?)').run(operationId, 'clear', 'legacy', d.id, 'deleting', now(), now(), JSON.stringify({ revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, messages: activeMessages, files: files.length, bytes, tempFiles: tempBefore }), null);
     db.exec('COMMIT');
    } catch (e) { db.exec('ROLLBACK'); throw e; }
+   const oldUploads = [...uploadMeta.entries()].filter(([, meta]) => meta.chatId === 'legacy').map(([id]) => id);
    for (const meta of uploadMeta.values()) if (meta.chatId === 'legacy') { try { meta.req.destroy(); } catch {} }
-   let freedBytes = 0, cleanupPending = false;
-   for (const file of files) {
-    try { fs.rmSync(path.join(uploads, file.id), { force: true }); db.prepare('DELETE FROM files WHERE id=?').run(file.id); freedBytes += file.size; }
-    catch { cleanupPending = true; }
-   }
+   const uploadDeadline = Date.now() + 3000;
+   while (Date.now() < uploadDeadline && oldUploads.some(id => uploadJobs.has(id))) await new Promise(resolve => setTimeout(resolve, 50));
+   const uploadsPending = oldUploads.some(id => uploadJobs.has(id));
+   const cleaned = cleanClearFiles(files, tempNames);
+   const cleanupPending = cleaned.pending || cleaned.tempFiles > 0 || uploadsPending;
+   const freedBytes = cleaned.freedBytes;
    const status = cleanupPending ? 'partial' : 'done';
-   const result = { revision: next.revision, epoch: next.epoch, messages: activeMessages, files: files.length, bytes, freedBytes, cleanupPending };
+   const result = { revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, messages: activeMessages, files: files.length, bytes, freedBytes, tempFiles: cleaned.tempFiles, cleanupPending };
    db.prepare('UPDATE operations SET status=?,updatedAt=?,result=?,error=? WHERE id=?').run(status, now(), JSON.stringify(result), cleanupPending ? 'Не все файлы удалены' : null, operationId);
    logEvent('chat_cleared', operationId, address(peer));
-   broadcast('chat_cleared', { chatId: 'legacy', revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, operationId, freedBytes, cleanupPending });
-   return send(res, 202, { operationId, status, revision: next.revision, epoch: next.epoch, freedBytes, cleanupPending });
+   broadcast('chat_cleared', { chatId: 'legacy', revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, operationId, freedBytes, tempFiles: cleaned.tempFiles, cleanupPending });
+   return send(res, 202, { operationId, status, revision: next.revision, deletionRevision: next.deletionRevision, epoch: next.epoch, freedBytes, tempFiles: cleaned.tempFiles, cleanupPending });
   }
   if (route.startsWith('/api/operations/') && req.method === 'GET') {
    if (!d.host) throw error(403, 'Операции доступны на главном устройстве');
@@ -564,7 +586,7 @@ if (NATIVE_KEY && process.env.RYADOM_BRIDGE_PORT) {
  }); bridgeServer.on('error', e => { console.error(e); process.exit(1); }); bridgeServer.listen(Number(process.env.RYADOM_BRIDGE_PORT), '127.0.0.1');
 }
 server.listen(PORT, process.env.RYADOM_LAN_STATE ? '127.0.0.1' : '0.0.0.0', () => {
- for (const file of fs.readdirSync(uploads)) if (file.endsWith('.part')) fs.rmSync(path.join(uploads, file), { force: true });
+ for (const file of fs.readdirSync(uploads)) if (file.endsWith('.part')) try { fs.rmSync(path.join(uploads, file), { force: true }); } catch {}
  for (const row of db.prepare("SELECT id FROM files WHERE state='deleting'").all()) {
   try { fs.rmSync(path.join(uploads, row.id), { force: true }); db.prepare('DELETE FROM files WHERE id=?').run(row.id); } catch {}
  }
