@@ -37,7 +37,8 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, deviceId TEXT NOT NULL, created TEXT NOT NULL, lastSeen TEXT NOT NULL, expires TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, detail TEXT, ip TEXT, created TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, ownerDeviceId TEXT, created TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, deletionRevision INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0);
- CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, type TEXT NOT NULL, chatId TEXT NOT NULL, actorId TEXT, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, result TEXT, error TEXT);`);
+ CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, type TEXT NOT NULL, chatId TEXT NOT NULL, actorId TEXT, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, result TEXT, error TEXT);
+ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
 function columnExists(table, column) { try { return db.prepare(`PRAGMA table_info(${table})`).all().some(x => x.name === column); } catch { return true; } }
 if (!columnExists('files', 'deviceId')) { try { db.exec('ALTER TABLE files ADD COLUMN deviceId TEXT'); } catch {} }
 if (!columnExists('messages', 'chatId')) { try { db.exec("ALTER TABLE messages ADD COLUMN chatId TEXT NOT NULL DEFAULT 'legacy'"); } catch {} }
@@ -58,6 +59,22 @@ for (const row of db.prepare("SELECT id,file FROM messages WHERE file IS NOT NUL
  try { const file = JSON.parse(row.file); if (file && file.id) db.prepare('UPDATE files SET messageId=? WHERE id=?').run(row.id, file.id); } catch {}
 }
 db.exec('PRAGMA user_version=3');
+function metaValue(key){return db.prepare('SELECT value FROM meta WHERE key=?').get(key)?.value || '';}
+function setMeta(key,value){db.prepare('INSERT INTO meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);}
+if(!metaValue('group_id')) setMeta('group_id', crypto.randomBytes(16).toString('hex'));
+function importTrustRoster() {
+ try {
+  const file = path.join(DATA, 'trust-roster.json');
+  if (!fs.existsSync(file)) return;
+  const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (typeof value.groupId === 'string' && /^[0-9a-f]{32}$/.test(value.groupId)) setMeta('group_id', value.groupId);
+  for (const device of Array.isArray(value.devices) ? value.devices : []) {
+   if (!device || !/^d1-[0-9a-f]{32}$/.test(String(device.id || '')) || !/^[0-9a-f]{64}$/.test(String(device.tokenHash || ''))) continue;
+   if (db.prepare('SELECT id FROM devices WHERE id=?').get(device.id)) continue;
+   db.prepare('INSERT INTO devices (id,name,token,host,created) VALUES (?,?,?,0,?)').run(device.id, cleanName(device.name).slice(0, 40), device.tokenHash, now());
+  }
+ } catch (e) { console.error('Не удалось импортировать trust roster:', e.message); }
+}
 
 const sha = x => crypto.createHash('sha256').update(x).digest('hex');
 const now = () => new Date().toISOString();
@@ -391,6 +408,10 @@ const server = http.createServer(async (req, res) => {
    return send(res, 200, { ok: true, device: { id: d.id, name: d.name, host: false } }, { 'Set-Cookie': p.sessionCookie });
   }
   const d = device(req); if (!d) throw error(401, 'Подключите устройство по коду');
+  if (route === '/api/trust/roster' && req.method === 'GET') {
+   const devices = db.prepare('SELECT id,name,token,created FROM devices WHERE host=0 ORDER BY created').all().map(x => ({ id: x.id, name: x.name, tokenHash: x.token, created: x.created }));
+   return send(res, 200, { groupId: metaValue('group_id'), devices });
+  }
   if (route === '/api/state' && req.method === 'GET') {
    const chat = chatRow();
    const messages = db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL ORDER BY seq DESC LIMIT 100').all().reverse().map(message);
@@ -653,6 +674,7 @@ if (NATIVE_KEY && process.env.RYADOM_BRIDGE_PORT) {
  }); bridgeServer.on('error', e => { console.error(e); process.exit(1); }); bridgeServer.listen(Number(process.env.RYADOM_BRIDGE_PORT), '127.0.0.1');
 }
 const activeSession = beginEphemeralSession();
+importTrustRoster();
 server.listen(PORT, process.env.RYADOM_LAN_STATE ? '127.0.0.1' : '0.0.0.0', () => {
  for (const file of fs.readdirSync(uploads)) if (file.endsWith('.part')) try { fs.rmSync(path.join(uploads, file), { force: true }); } catch {}
  for (const row of db.prepare("SELECT id FROM files WHERE state='deleting'").all()) {

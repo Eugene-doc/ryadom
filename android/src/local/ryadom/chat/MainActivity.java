@@ -28,6 +28,8 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+
+import java.io.*;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
@@ -77,6 +79,7 @@ public final class MainActivity extends Activity {
   @JavascriptInterface public String appVersion(){return ChatHost.VERSION;}
   @JavascriptInterface public String deviceId(){return identity==null?"":identity.id;}
   @JavascriptInterface public String deviceToken(){return identity==null?"":identity.token;}
+  @JavascriptInterface public void saveRoster(String value){try{File file=new File(getFilesDir(),"trust-roster.json");File temporary=new File(file.getPath()+".tmp");try(FileOutputStream out=new FileOutputStream(temporary)){out.write(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));out.getFD().sync();}if(!temporary.renameTo(file)){java.nio.file.Files.move(temporary.toPath(),file.toPath(),java.nio.file.StandardCopyOption.REPLACE_EXISTING);}}catch(Exception ignored){}}
   @JavascriptInterface public void openDownloads(){runOnUiThread(MainActivity.this::showDownloads);}
  }
  private void rememberDownload(Uri uri,String name){

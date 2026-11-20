@@ -94,7 +94,13 @@ namespace Ryadom {
     core.Settings.IsStatusBarEnabled = false;
     core.Settings.AreDevToolsEnabled = false;
     core.Settings.IsZoomControlEnabled = true;
-    core.WebMessageReceived += (a, b) => { if (b.TryGetWebMessageAsString() == "openDownloads") OpenDownloads(); };
+    core.WebMessageReceived += (a, b) => {
+     string message = b.TryGetWebMessageAsString();
+     if (message == "openDownloads") { OpenDownloads(); return; }
+     if (message != null && message.StartsWith("roster:", StringComparison.Ordinal)) {
+      try { File.WriteAllText(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Ryadom", "trust-roster.json"), message.Substring(7), new System.Text.UTF8Encoding(false)); } catch {}
+     }
+    };
     core.DownloadStarting += (a, b) => {
      string name = Path.GetFileName(b.ResultFilePath);
      if (string.IsNullOrEmpty(name)) name = "file";
@@ -104,7 +110,7 @@ namespace Ryadom {
      do { path = Path.Combine(downloads, DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + "-" + Guid.NewGuid().ToString("N").Substring(0, 8) + "-" + name); } while (File.Exists(path) || File.Exists(path + ".crdownload"));
      b.ResultFilePath = path; b.Handled = true; lastDownload = path;
     };
-    core.AddScriptToExecuteOnDocumentCreatedAsync("window.ryadom={appVersion:'" + VersionText().Replace("'", "\\'") + "',deviceId:'" + deviceId.Replace("'", "\\'") + "',deviceToken:'" + deviceToken.Replace("'", "\\'") + "',openDownloads:function(){window.chrome.webview.postMessage('openDownloads');}};").ContinueWith(task => {
+    core.AddScriptToExecuteOnDocumentCreatedAsync("window.ryadom={appVersion:'" + VersionText().Replace("'", "\\'") + "',deviceId:'" + deviceId.Replace("'", "\\'") + "',deviceToken:'" + deviceToken.Replace("'", "\\'") + "',saveRoster:function(value){window.chrome.webview.postMessage('roster:'+value);},openDownloads:function(){window.chrome.webview.postMessage('openDownloads');}};").ContinueWith(task => {
      if (task.IsFaulted) { Fail(task.Exception); return; }
      scriptsReady = true;
      if (string.IsNullOrEmpty(pendingUrl)) return;

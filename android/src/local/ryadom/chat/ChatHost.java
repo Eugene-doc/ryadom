@@ -75,6 +75,7 @@ final class ChatHost implements AutoCloseable {
   for(File file:Objects.requireNonNull(files.listFiles()))if(file.getName().endsWith(".part"))try{file.delete();}catch(Exception ignored){}
   migrateSessions();
   migrateChatV3();
+  importTrustRoster();
   recoverDeletedFiles();
   beginEphemeralSession();
   newCode(true);
@@ -293,6 +294,22 @@ final class ChatHost implements AutoCloseable {
   }
   broadcast("message",message,false);
   return message;
+ }
+ private synchronized void importTrustRoster() {
+  File file=new File(directory.getParentFile(),"trust-roster.json");if(!file.exists())return;
+  try{
+   JSONObject value=new JSONObject(new String(Files.readAllBytes(file.toPath()),StandardCharsets.UTF_8));
+   String groupId=value.optString("groupId","");if(groupId.matches("[0-9a-f]{32}"))state.put("group_id",groupId);
+   JSONArray incoming=value.optJSONArray("devices");if(incoming==null)return;
+   change(next->{
+    JSONArray devices=next.getJSONArray("devices");
+    for(int i=0;i<incoming.length();i++){
+     JSONObject source=incoming.getJSONObject(i);String id=source.optString("id","").toLowerCase(Locale.ROOT),token=source.optString("tokenHash","").toLowerCase(Locale.ROOT);
+     if(!id.matches("d1-[0-9a-f]{32}")||!token.matches("[0-9a-f]{64}")||id.equals(hostId)||find(devices,"id",id)!=null)continue;
+     devices.put(new JSONObject().put("id",id).put("name",cleanName(source.optString("name","Устройство")).substring(0,Math.min(cleanName(source.optString("name","Устройство")).length(),40))).put("token",token).put("host",false).put("created",now()));
+    }
+   });
+  }catch(Exception ignored){}
  }
  private synchronized void beginEphemeralSession() throws Exception {
   final JSONObject host=hostDevice();
