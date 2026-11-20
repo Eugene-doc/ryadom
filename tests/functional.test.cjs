@@ -97,6 +97,26 @@ async function upload(cookie, name, requestId) {
  return data;
 }
 
+test('known device identity reconnects without a new pairing code', async () => {
+ const host = await login();
+ const state = await req('/api/state', { cookie: host });
+ const deviceId = 'd1-' + 'a'.repeat(32);
+ const deviceToken = 'b'.repeat(64);
+ const pending = await req('/api/pair', { method: 'POST', body: { name: 'Знакомое устройство', code: state.data.pairing.code, deviceId, deviceToken } });
+ assert.equal(pending.r.status, 202, JSON.stringify(pending.data) + logs);
+ const approve = await req('/api/host/pair/approve', { method: 'POST', body: { requestId: pending.data.requestId }, cookie: host });
+ assert.equal(approve.r.status, 200, logs);
+ const status = await fetch(`${base}/api/pair/status?requestId=${encodeURIComponent(pending.data.requestId)}`);
+ assert.equal(status.status, 200, logs);
+ const auth = await req('/api/auth', { method: 'POST', body: { deviceId, deviceToken } });
+ assert.equal(auth.r.status, 200, JSON.stringify(auth.data) + logs);
+ const cookie = auth.r.headers.get('set-cookie').split(';')[0];
+ const restored = await req('/api/state', { cookie });
+ assert.equal(restored.r.status, 200);
+ assert.equal(restored.data.me.id, deviceId);
+ assert.equal((await req('/api/auth', { method: 'POST', body: { deviceId, deviceToken: 'c'.repeat(64) } })).r.status, 401);
+});
+
 test('clear revision rejects messages added after preview', async () => {
  const host = await login();
  const device = await pair(host, 'Новое после preview');

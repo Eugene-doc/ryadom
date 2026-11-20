@@ -341,6 +341,16 @@ const server = http.createServer(async (req, res) => {
    logEvent('host_login', d.name, address(peer));
    return send(res, 200, { ok: true, device: { id: d.id, name: d.name, host: true } }, { 'Set-Cookie': sessionCookie(newSession(d.id)) });
   }
+  if (route === '/api/auth' && req.method === 'POST') {
+   const body = await json(req);
+   const deviceId = String(body.deviceId || '').toLowerCase();
+   const token = String(body.deviceToken || '').toLowerCase();
+   if (!/^d1-[0-9a-f]{32}$/.test(deviceId) || !/^[0-9a-f]{64}$/.test(token)) throw error(400, 'Некорректная идентичность устройства');
+   const d = db.prepare('SELECT * FROM devices WHERE id=? AND host=0').get(deviceId);
+   if (!d || !safeEqual(d.token, sha(token))) throw error(401, 'Устройство не remembered. Подключитесь по коду');
+   logEvent('device_auth', d.name, address(peer));
+   return send(res, 200, { ok: true, device: { id: d.id, name: d.name, host: false } }, { 'Set-Cookie': sessionCookie(newSession(d.id)) });
+  }
   if (route === '/api/pair' && req.method === 'POST') {
    const ip = address(peer); const entry = attempts.get(ip) || { count: 0, until: Date.now() + 60000 };
    if (Date.now() > entry.until) { entry.count = 0; entry.until = Date.now() + 60000; }
@@ -350,11 +360,20 @@ const server = http.createServer(async (req, res) => {
    if (pairingDisabled()) throw error(403, 'Код истёк. Создайте новый код на главном устройстве');
    if (!safeEqual(String(body.code || '').replace(/\s/g, ''), pairing.code)) throw error(403, 'Неверный код подключения');
    const name = cleanName(body.name).slice(0, 40); if (!body.name?.trim()) throw error(400, 'Укажите имя устройства');
+   const deviceId = String(body.deviceId || '').toLowerCase();
+   const token = String(body.deviceToken || '').toLowerCase();
+   let tokenHash = null;
+   if (deviceId || token) {
+    if (!/^d1-[0-9a-f]{32}$/.test(deviceId) || !/^[0-9a-f]{64}$/.test(token)) throw error(400, 'Некорректная идентичность устройства');
+    const existing = db.prepare('SELECT * FROM devices WHERE id=?').get(deviceId);
+    if (existing && (existing.host || !safeEqual(existing.token, sha(token)))) throw error(409, 'Идентичность устройства не совпадает');
+    tokenHash = sha(token);
+   }
    if (pendingList().length >= MAX_PENDING) throw error(429, 'Слишком много запросов на подключение. Подождите');
    pairing = { code: newCode(), expires: Date.now() + PAIR_CODE_TTL };
    broadcast('pairing', { code: pairing.code, expires: pairing.expires }, true);
    const requestId = crypto.randomBytes(16).toString('hex');
-   pendingPairs.set(requestId, { requestId, name, ip, created: now(), expires: Date.now() + PAIR_TTL, status: 'pending' });
+   pendingPairs.set(requestId, { requestId, name, ip, created: now(), expires: Date.now() + PAIR_TTL, status: 'pending', deviceId: deviceId || null, tokenHash });
    logEvent('pair_request', name, ip);
    broadcast('pair_request', { requestId, name, ip, created: now() }, true);
    return send(res, 202, { pending: true, requestId });
@@ -554,8 +573,12 @@ const server = http.createServer(async (req, res) => {
     const body = await json(req); const p = pendingPairs.get(String(body.requestId || ''));
     if (!p || p.status !== 'pending') throw error(404, 'Запрос не найден или устарел');
     const token = crypto.randomBytes(32).toString('hex');
-    const device = { id: crypto.randomUUID(), name: p.name.slice(0, 40), token: sha(token), host: false, created: now() };
-    db.prepare('INSERT INTO devices (id,name,token,host,created) VALUES (?,?,?,0,?)').run(device.id, device.name, device.token, device.created);
+    const deviceId = p.deviceId || crypto.randomUUID();
+    const tokenHash = p.tokenHash || sha(token);
+    const device = { id: deviceId, name: p.name.slice(0, 40), token: tokenHash, host: false, created: now() };
+    const prior = db.prepare('SELECT * FROM devices WHERE id=?').get(deviceId);
+    if (prior) db.prepare('UPDATE devices SET name=? WHERE id=?').run(device.name, deviceId);
+    else db.prepare('INSERT INTO devices (id,name,token,host,created) VALUES (?,?,?,0,?)').run(device.id, device.name, device.token, device.created);
     p.status = 'approved'; p.deviceId = device.id; p.approved = now();
     p.rawToken = newSession(device.id); p.sessionCookie = sessionCookie(p.rawToken);
     logEvent('pair_approved', p.name, p.ip);
