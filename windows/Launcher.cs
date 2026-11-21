@@ -68,19 +68,32 @@ namespace Ryadom {
     if(args.Length>1)File.WriteAllText(args[1],text,new UTF8Encoding(false));else MessageBox.Show(text,"Рядом · брандмауэр и сеть");
     return;
    }
-   bool first;
-   using(var mutex=new Mutex(true,"Local\\Ryadom.PersonalChat",out first)) {
-    if(!first){MessageBox.Show("Рядом уже запущен. Откройте окно чата через значок рядом с часами.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
-    do {chooseAgain=false;try{string lastId,lastFingerprint;ReadLastHost(out lastId,out lastFingerprint);using(var picker=new RolePicker(File.Exists(Path.Combine(Data,"last-target"))?File.ReadAllText(Path.Combine(Data,"last-target")):"",lastId,lastFingerprint)){if(picker.ShowDialog()!=DialogResult.OK)return;using(var app=new ChatApplication(picker))Application.Run(app);}}catch(Exception e){MessageBox.Show("Не удалось запустить Рядом.\n\n"+e.Message,"Рядом",MessageBoxButtons.OK,MessageBoxIcon.Error);}}while(chooseAgain);
+   bool first=false;Mutex mutex=null;
+   try{mutex=new Mutex(true,SingleInstanceActivation.GetMutexName(),out first);}catch(UnauthorizedAccessException){if(SingleInstanceActivation.TrySignal(5000))return;MessageBox.Show("Не удалось открыть окно работающего Рядом. Попробуйте ещё раз.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}catch(IOException){if(SingleInstanceActivation.TrySignal(5000))return;MessageBox.Show("Не удалось открыть окно работающего Рядом. Попробуйте ещё раз.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
+   try {
+    bool own=first;
+    if(!own){
+     if(SingleInstanceActivation.TrySignal(5000))return;
+     try{own=mutex.WaitOne(0);}catch(AbandonedMutexException){own=true;}
+     if(!own){MessageBox.Show("Не удалось открыть окно работающего Рядом. Попробуйте ещё раз.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Information);return;}
+    }
+    using(var dispatcher=new Control()) {
+     dispatcher.CreateControl();
+     var router=new ActivationRouter();
+     using(var activation=SingleInstanceActivation.Start(dispatcher,router.Request)) {
+      do {chooseAgain=false;try{string lastId,lastFingerprint;ReadLastHost(out lastId,out lastFingerprint);using(var picker=new RolePicker(File.Exists(Path.Combine(Data,"last-target"))?File.ReadAllText(Path.Combine(Data,"last-target")):"",lastId,lastFingerprint)){router.SetPicker(picker);if(picker.ShowDialog()!=DialogResult.OK)return;router.ClearPicker(picker);using(var app=new ChatApplication(picker)){router.SetApplication(app);Application.Run(app);router.ClearApplication(app);}}}catch(Exception e){MessageBox.Show("Не удалось запустить Рядом.\n\n"+e.Message,"Рядом",MessageBoxButtons.OK,MessageBoxIcon.Error);}}while(chooseAgain);
+     }
+    }
    }
+   finally { if(mutex!=null) mutex.Dispose(); }
   }
   private ChatApplication(RolePicker picker) {
    choice=picker;File.WriteAllText(Path.Combine(Data,"desktop-role"),choice.Hosting?"host":"client");if(!choice.Hosting){File.WriteAllText(Path.Combine(Data,"last-target"),choice.Target+":"+choice.TargetPort);WriteLastHost(choice.TargetHostId,choice.TargetFingerprint);}else{try{File.Delete(Path.Combine(Data,"last-target"));}catch{}WriteLastHost("","");}
    File.Delete(Path.Combine(Data,"choose-role"));
    tray=new NotifyIcon{Icon=Icon.ExtractAssociatedIcon(Application.ExecutablePath),Text=choice.Hosting?"Рядом · главное устройство":"Рядом · подключён к чату"};
-   var menu=new ContextMenuStrip();menu.Items.Add("Открыть чат",null,(s,e)=>OpenChat(false));if(choice.Hosting){menu.Items.Add("Подключить устройство",null,(s,e)=>OpenChat(true));menu.Items.Add("Настроить брандмауэр",null,(s,e)=>FirewallAdvisor.Configure(Data));menu.Items.Add("Проверить брандмауэр и сеть",null,(s,e)=>FirewallAdvisor.ShowReport(Data));}
+   var menu=new ContextMenuStrip();menu.Items.Add("Открыть чат",null,(s,e)=>RequestOpenChat());if(choice.Hosting){menu.Items.Add("Подключить устройство",null,(s,e)=>OpenChat(true));menu.Items.Add("Настроить брандмауэр",null,(s,e)=>FirewallAdvisor.Configure(Data));menu.Items.Add("Проверить брандмауэр и сеть",null,(s,e)=>FirewallAdvisor.ShowReport(Data));}
    menu.Items.Add("Выбрать другое главное устройство",null,(s,e)=>{if(!choice.Hosting||MessageBox.Show("Остановить этот чат и выбрать главное устройство заново? История будет очищена у всех устройств.","Рядом",MessageBoxButtons.OKCancel)==DialogResult.OK)Stop(true);});
-   menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Создать ярлык на рабочем столе",null,(s,e)=>CreateShortcut());menu.Items.Add("Как закрепить на панели задач",null,(s,e)=>MessageBox.Show("Создайте ярлык и перетащите его на панель задач, либо закрепите открытое окно Рядом: правый клик по значку на панели задач → «Закрепить на панели задач».","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Information));menu.Items.Add("Папка с данными",null,(s,e)=>Process.Start("explorer.exe",Data));menu.Items.Add("Выключить Рядом",null,(s,e)=>Stop(false));tray.ContextMenuStrip=menu;tray.DoubleClick+=(s,e)=>OpenChat(false);tray.Visible=true;
+   menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Создать ярлык на рабочем столе",null,(s,e)=>CreateShortcut());menu.Items.Add("Как закрепить на панели задач",null,(s,e)=>MessageBox.Show("Создайте ярлык и перетащите его на панель задач, либо закрепите открытое окно Рядом: правый клик по значку на панели задач → «Закрепить на панели задач».","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Information));menu.Items.Add("Папка с данными",null,(s,e)=>Process.Start("explorer.exe",Data));menu.Items.Add("Выключить Рядом",null,(s,e)=>Stop(false));tray.ContextMenuStrip=menu;tray.DoubleClick+=(s,e)=>RequestOpenChat();tray.Visible=true;
    string bin=Path.Combine(Data,"bin");Directory.CreateDirectory(bin);string digest;using(var reader=new StreamReader(Assembly.GetExecutingAssembly().GetManifestResourceStream("HostHash")))digest=reader.ReadToEnd().Trim();
    string executable=Path.Combine(bin,"RyadomHost-"+digest.Substring(0,12)+".exe");
    if(!File.Exists(executable)){string temp=executable+".tmp";using(var input=Assembly.GetExecutingAssembly().GetManifestResourceStream("Host"))using(var output=File.Create(temp))input.CopyTo(output);File.Move(temp,executable);}
@@ -114,12 +127,18 @@ namespace Ryadom {
    if(ready){if(host.HasExited){Stop(false);return;}if(choice.Hosting){if(!firewallChecked){firewallChecked=true;FirewallAdvisor.Advise(Data);}try{RefreshHostNetworks(LanInterfaces.Read());}catch{}}return;}
    tries++;try{var request=(HttpWebRequest)WebRequest.Create(BaseUrl+"api/local/status");request.Proxy=null;request.Timeout=300;request.Headers["X-Ryadom"]="1";request.Headers["X-Ryadom-Native"]=bridgeKey;using(var response=request.GetResponse()){}ready=true;timer.Interval=4000;OpenChat(false);}catch{if(tries>=35||host.HasExited){MessageBox.Show("Не удалось запустить Рядом: порт 4280 занят или локальный доступ заблокирован. Повторите выбор главного устройства.","Рядом");Stop(true);}}
   }
+  internal bool RequestOpenChat(){
+   if(stopping)return false;
+   if(!ready)return true;
+   if(window==null||window.IsDisposed)OpenChat(false);else window.ShowAndActivate();
+   return true;
+  }
   private void OpenChat(bool connect) {
    bool hosting=File.Exists(Path.Combine(Data,"desktop-role"))&&File.ReadAllText(Path.Combine(Data,"desktop-role"))=="host";string url=BaseUrl+(connect?"?connect=1":"");
    if(hosting)try{url+="#t="+RequestHostToken();}catch(Exception e){try{File.AppendAllText(Path.Combine(Data,"network.log"),DateTime.Now+" host-token "+e.Message+Environment.NewLine);}catch{}}
    try{
     if(window==null||window.IsDisposed){window=new ChatWindow(url,e=>{try{if(window!=null){window.CloseForExit();window.Dispose();}}catch{}window=null;OpenBrowser(url);MessageBox.Show("Не удалось запустить WebView2: "+e.Message+"\n\nОткрыт запасной вариант в браузере. Установите Microsoft Edge WebView2 Runtime.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Warning);},Device.Id,Device.Token);window.Show();}
-    else{window.Navigate(url);window.Show();}
+    else if(connect){window.Navigate(url);}else{window.ShowAndActivate();}
    }catch(Exception e){
     OpenBrowser(url);
     MessageBox.Show("Не удалось открыть собственное окно Рядом: "+e.Message+"\n\nОткрыт запасной вариант в браузере. Установите Microsoft Edge WebView2 Runtime для правильной иконки и панели задач.","Рядом",MessageBoxButtons.OK,MessageBoxIcon.Warning);

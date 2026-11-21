@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -51,6 +52,12 @@ namespace Ryadom {
   private string pendingUrl;
   private bool allowClose, failed;
   private volatile bool scriptsReady;
+  [DllImport("user32.dll")]
+  private static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")]
+  private static extern bool SetForegroundWindow(IntPtr hWnd);
+  private const int SW_RESTORE = 9;
+  private const int SW_SHOW = 5;
   public ChatWindow(string url) : this(url, null, "", "") { }
   public ChatWindow(string url, Action<Exception> onFailure) : this(url, onFailure, "", "") { }
   public ChatWindow(string url, Action<Exception> onFailure, string deviceId, string deviceToken) {
@@ -83,7 +90,19 @@ namespace Ryadom {
   public void Navigate(string url) {
    pendingUrl = url;
    if (scriptsReady && view.CoreWebView2 != null) view.CoreWebView2.Navigate(url);
-   Show(); if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate();
+   ShowAndActivate();
+  }
+  public void ShowAndActivate() {
+   Show();
+   if (WindowState == FormWindowState.Minimized) {
+    WindowState = FormWindowState.Normal;
+    try { ShowWindowAsync(Handle, SW_RESTORE); } catch { }
+   } else {
+    try { ShowWindowAsync(Handle, SW_SHOW); } catch { }
+   }
+   BringToFront();
+   Activate();
+   try { SetForegroundWindow(Handle); } catch { }
   }
   public void CloseForExit() { allowClose = true; Close(); }
   private void Initialize() {
