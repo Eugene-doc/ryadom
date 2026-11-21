@@ -4,7 +4,7 @@
 
 ## Что подписывается
 
-1. **Windows-сборка `Ryadom-Windows.exe`** — Authenticode-подпись (`signtool.exe`, Windows SDK).
+1. **Windows-сборка `Ryadom-Windows-<версия>.exe`** — Authenticode-подпись (`signtool.exe`, Windows SDK).
 2. **Манифест `dist/SHA256SUMS.txt`** — отделённая подпись OpenSSH (`ssh-keygen -Y sign`). Манифест содержит SHA-256 всех файлов выпуска, поэтому его подпись покрывает EXE, APK, архив исходников и текстовые файлы.
 
 Публичные ключи и сертификат лежат в каталоге [`keys/`](../keys/):
@@ -90,7 +90,7 @@ foreach ($line in $sums) {
 ssh-keygen -Y verify -f keys\allowed_signers -I release@ryadom.local -n ryadom-release -s dist\SHA256SUMS.txt.sig < dist\SHA256SUMS.txt
 
 # 3. Проверить Authenticode EXE
-Get-AuthenticodeSignature dist\Ryadom-Windows.exe | Format-List Status, StatusMessage, SignerCertificate
+Get-AuthenticodeSignature dist\Ryadom-Windows-0.4.1.exe | Format-List Status, StatusMessage, SignerCertificate
 ```
 
 Для самоподписанного сертификата `Status` будет `UnknownError`/`NotTrusted` — это ожидаемо до покупки OV/EV. Сверяйте отпечаток сертификата с опубликованным выше.

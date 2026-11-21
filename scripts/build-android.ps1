@@ -14,6 +14,8 @@ $SignDir = if ($SigningDir) { $SigningDir } else { Join-Path $env:LOCALAPPDATA '
 if ($SignDir -match 'OneDrive|Dropbox|Google Drive|iCloud') { Write-Warning "Каталог подписи находится в синхронизируемой папке: $SignDir. Перенесите ключ в защищённое место." }
 if (-not (Test-Path -LiteralPath $SignDir)) { New-Item -ItemType Directory -Path $SignDir -Force | Out-Null }
 $DistDir = Join-Path $ProjectRoot 'dist'
+$Version = (Get-Content -LiteralPath (Join-Path $ProjectRoot 'package.json') -Raw | ConvertFrom-Json).version
+$Apk = Join-Path $DistDir "Ryadom-Android-$Version.apk"
 foreach ($leaf in @('classes','gen','dex','src','res','assets')) {
  $Target = [IO.Path]::GetFullPath((Join-Path $BuildRoot $leaf))
  if (-not $Target.StartsWith([IO.Path]::GetFullPath($BuildRoot) + [IO.Path]::DirectorySeparatorChar)) { throw 'Invalid build cleanup path' }
@@ -50,6 +52,6 @@ if (-not (Test-Path -LiteralPath $KeyStore)) {
 }
 $SignPassword = if ($env:RYADOM_SIGN_PASSWORD) { $env:RYADOM_SIGN_PASSWORD } elseif (Test-Path -LiteralPath $PasswordFile) { (Get-Content -LiteralPath $PasswordFile -Raw).Trim() } else { throw "Пароль подписи не найден: $PasswordFile. Задайте RYADOM_SIGN_PASSWORD или положите файл пароля в каталог подписи." }
 $KsPassArg = if (Test-Path -LiteralPath $PasswordFile) { "file:$PasswordFile" } else { "pass:$SignPassword" }
-Invoke-Checked "$JavaBin\java.exe" @('-jar',"$BuildTools\lib\apksigner.jar",'sign','--ks',$KeyStore,'--ks-key-alias','ryadom','--ks-pass',$KsPassArg,'--out',"$DistDir\Ryadom-Android.apk", "$BuildRoot\aligned.apk")
-Invoke-Checked "$JavaBin\java.exe" @('-jar',"$BuildTools\lib\apksigner.jar",'verify','--verbose','--print-certs',"$DistDir\Ryadom-Android.apk")
-Write-Output "Ready: $DistDir\Ryadom-Android.apk"
+Invoke-Checked "$JavaBin\java.exe" @('-jar',"$BuildTools\lib\apksigner.jar",'sign','--ks',$KeyStore,'--ks-key-alias','ryadom','--ks-pass',$KsPassArg,'--out',$Apk, "$BuildRoot\aligned.apk")
+Invoke-Checked "$JavaBin\java.exe" @('-jar',"$BuildTools\lib\apksigner.jar",'verify','--verbose','--print-certs',$Apk)
+Write-Output "Ready: $Apk"

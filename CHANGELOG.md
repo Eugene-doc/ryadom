@@ -1,5 +1,16 @@
 # История изменений
 
+## 0.4.1 — 21 ноября 2026
+
+Версия в имени готовых файлов. Протокол 4; Android `versionCode 13`, Windows `0.4.1.0`.
+
+**Подробные примечания и файлы выпуска:** [docs/releases/0.4.1.md](docs/releases/0.4.1.md).
+
+- Windows-сборка выходит как `Ryadom-Windows-0.4.1.exe`, Android — `Ryadom-Android-0.4.1.apk`; версия берётся из `package.json` автоматически.
+- Содержимое, протокол и поведение не менялись.
+- Обновлены README, CHANGELOG, GUIDE, START-HERE, дорожная карта и release notes.
+- Node 42/42; Android 40/40; Windows build PASS.
+
 ## 0.4.0 — 21 ноября 2026
 
 Эфемерный общий чат и постоянная идентичность устройств. Протокол 4; Android `versionCode 12`, Windows `0.4.0.0`.

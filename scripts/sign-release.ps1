@@ -26,7 +26,9 @@ if (-not (Test-Path -LiteralPath $SigningDir)) { New-Item -ItemType Directory -P
 
 $signTool = Find-Tool @('signtool') @((Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe'))
 $sshKeygen = Find-Tool @('ssh-keygen') @((Join-Path $env:WINDIR 'System32\OpenSSH\ssh-keygen.exe'))
-$exe = Join-Path $DistDir 'Ryadom-Windows.exe'
+$exeItem = Get-ChildItem -LiteralPath $DistDir -File -Filter 'Ryadom-Windows-*.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (-not $exeItem) { $exeItem = Get-Item -LiteralPath (Join-Path $DistDir 'Ryadom-Windows.exe') -ErrorAction SilentlyContinue }
+$exe = if ($exeItem) { $exeItem.FullName } else { '' }
 $sumFile = Join-Path $DistDir 'SHA256SUMS.txt'
 $sumSig = "$sumFile.sig"
 $allowedSigners = Join-Path (Split-Path -Parent $PSScriptRoot) 'keys\allowed_signers'
@@ -37,7 +39,7 @@ $sshKey = if ($env:RYADOM_SSH_SIGN_KEY) { $env:RYADOM_SSH_SIGN_KEY } else { Join
 Write-Step 'Подпись Windows (Authenticode)'
 $pfx = if ($env:RYADOM_SIGN_PFX) { $env:RYADOM_SIGN_PFX } else { Join-Path $SigningDir 'code-signing.pfx' }
 $pfxPassword = if ($env:RYADOM_SIGN_PFX_PASSWORD) { $env:RYADOM_SIGN_PFX_PASSWORD } elseif (Test-Path -LiteralPath (Join-Path $SigningDir 'code-signing.password')) { (Get-Content -LiteralPath (Join-Path $SigningDir 'code-signing.password') -Raw).Trim() } else { $null }
-if (-not (Test-Path -LiteralPath $exe)) { Write-Host 'Пропуск: Ryadom-Windows.exe не найден.' }
+if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host 'Пропуск: Ryadom-Windows-<версия>.exe не найден.' }
 elseif (-not (Test-Path -LiteralPath $pfx)) { Write-Host "Пропуск: сертификат не найден ($pfx)." }
 elseif (-not $signTool) { Write-Host 'Пропуск: signtool.exe не найден (нужен Windows SDK).' }
 elseif (-not $pfxPassword) { Write-Host "Пропуск: нет пароля PFX (RYADOM_SIGN_PFX_PASSWORD или $SigningDir\code-signing.password)." }
@@ -45,7 +47,7 @@ elseif (-not $VerifyOnly) {
  $argsSign = @('sign','/fd','SHA256','/f',$pfx,'/p',$pfxPassword)
  $code = Invoke-Native $signTool ($argsSign + @('/tr','http://timestamp.digicert.com','/td','SHA256',$exe))
  if ($code -ne 0) { $code = Invoke-Native $signTool ($argsSign + @($exe)) }
- if ($code -ne 0) { throw 'signtool не смог подписать Ryadom-Windows.exe' }
+ if ($code -ne 0) { throw 'signtool не смог подписать Ryadom-Windows-<версия>.exe' }
 }
 if (Test-Path -LiteralPath $exe) {
  $sig = Get-AuthenticodeSignature -LiteralPath $exe

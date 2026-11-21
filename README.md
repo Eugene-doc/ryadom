@@ -1,10 +1,12 @@
-# Рядом 0.4.0
+# Рядом 0.4.1
 
 Личный мини-чат для Windows и Android. Обменивайтесь текстом, фото, видео и файлами между своими устройствами в одной домашней сети — без интернета и аккаунтов.
 
-**[Скачать для Windows](https://github.com/Eugene-doc/ryadom/releases/download/v0.4.0/Ryadom-Windows.exe) · [Скачать для Android](https://github.com/Eugene-doc/ryadom/releases/download/v0.4.0/Ryadom-Android.apk) · [Все файлы выпуска](https://github.com/Eugene-doc/ryadom/releases/tag/v0.4.0)**
+**[Скачать для Windows](https://github.com/Eugene-doc/ryadom/releases/download/v0.4.1/Ryadom-Windows-0.4.1.exe) · [Скачать для Android](https://github.com/Eugene-doc/ryadom/releases/download/v0.4.1/Ryadom-Android-0.4.1.apk) · [Все файлы выпуска](https://github.com/Eugene-doc/ryadom/releases/tag/v0.4.1)**
 
-**[Что нового в 0.4.0](docs/releases/0.4.0.md)** — один общий эфемерный чат, постоянная identity устройств, протокол 4.
+Имена готовых файлов теперь содержат версию: `Ryadom-Windows-0.4.1.exe` и `Ryadom-Android-0.4.1.apk`.
+
+**[Что нового в 0.4.1](docs/releases/0.4.1.md)** — версия в имени файла; содержимое 0.4.0 не менялось.
 
 ## Возможности
 
@@ -44,7 +46,8 @@
 | [docs/GUIDE.md](docs/GUIDE.md) | Подробная инструкция: установка, Happ, сеть, хранение данных и сборка из исходников. |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Дорожная карта обновлений: срочная безопасность, средние и малозначительные правки, функции, инженерия. |
 | [docs/releases/](docs/releases/) | «Что нового» для каждого выпуска; правило и шаблон для будущих релизов. |
-| [docs/releases/0.4.0.md](docs/releases/0.4.0.md) | Подробные примечания к текущему выпуску 0.4.0. |
+| [docs/releases/0.4.1.md](docs/releases/0.4.1.md) | Подробные примечания к текущему выпуску 0.4.1. |
+| [docs/releases/0.4.0.md](docs/releases/0.4.0.md) | Примечания к предыдущему выпуску 0.4.0. |
 | [docs/releases/0.3.3.md](docs/releases/0.3.3.md) | Примечания к предыдущему выпуску 0.3.3. |
 | [docs/releases/0.3.2.md](docs/releases/0.3.2.md) | Примечания к предыдущему выпуску 0.3.2. |
 | [docs/releases/0.3.1.md](docs/releases/0.3.1.md) | Примечания к предыдущему выпуску 0.3.1. |
