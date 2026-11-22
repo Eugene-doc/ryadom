@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 const icon = name => { const s=document.createElementNS('http://www.w3.org/2000/svg','svg');const u=document.createElementNS(s.namespaceURI,'use');u.setAttribute('href',`#i-${name}`);s.append(u);return s; };
 const el = (tag,cls,text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, clearOperationId=null, lastClearOperationId=null, lastClearNoticeOperation=null, stateGeneration=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
+let e2eeIdentity=null, e2eeSession='', e2eePromise=null;
 const uuid=()=>{if(crypto.randomUUID)return crypto.randomUUID();const b=crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;return [...b].map((v,i)=>([4,6,8,10].includes(i)?'-':'')+v.toString(16).padStart(2,'0')).join('');};
 const sizeText=n=>n<1024?`${n} Б`:n<1024*1024?`${(n/1024).toFixed(0)} КБ`:`${(n/1024/1024).toFixed(n<10*1024*1024?1:0)} МБ`;
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
@@ -15,7 +16,15 @@ function nativeIdentity(){const bridge=window.ryadom;if(!bridge)return null;cons
 async function nativeAuth(){const identity=nativeIdentity();if(!identity)return false;try{await api('/api/auth','POST',{...identity,protocol:4});return true;}catch(e){return false;}}
 let rosterSavedAt=0;
 async function saveTrustRoster(){const bridge=window.ryadom;if(!bridge||typeof bridge.saveRoster!=='function')return;if(Date.now()-rosterSavedAt<5000)return;try{const roster=await api('/api/trust/roster');bridge.saveRoster(JSON.stringify(roster));rosterSavedAt=Date.now();}catch{}}
-function showJoin(){events?.close();events=null;me=null;chat=null;messages.clear();queue=[];pendingRequests=[];fingerprint='';storage=null;lastClearOperationId=null;lastClearNoticeOperation=null;$('header-clear-chat-button').hidden=true;$('join-pending').hidden=true;$('join-error').textContent='';$('app').hidden=true;$('join-screen').hidden=false;$('device-name').value=/Android/i.test(navigator.userAgent)?'Мой Android':/iPhone|iPad/i.test(navigator.userAgent)?'Мой iPhone':'Мой ноутбук';if($('settings-dialog').open)$('settings-dialog').close();}
+async function ensureE2EE(){
+ if(!chat?.sessionId||!me||!window.RyadomE2EE||!RyadomE2EE.available())return;
+ if(e2eeSession===chat.sessionId&&e2eeIdentity)return;
+ if(e2eePromise)return e2eePromise;
+ const session=chat.sessionId;
+ e2eePromise=(async()=>{try{const identity=await RyadomE2EE.ensureIdentity(session,me.id);await api('/api/keys','POST',{publicKey:identity.publicKey,algorithm:'ECDH-P256'});e2eeIdentity=identity;e2eeSession=session;}catch(e){e2eeIdentity=null;e2eeSession='';}finally{e2eePromise=null;}})();
+ return e2eePromise;
+}
+function showJoin(){events?.close();events=null;me=null;chat=null;messages.clear();queue=[];pendingRequests=[];fingerprint='';storage=null;e2eeIdentity=null;e2eeSession='';e2eePromise=null;lastClearOperationId=null;lastClearNoticeOperation=null;$('header-clear-chat-button').hidden=true;$('join-pending').hidden=true;$('join-error').textContent='';$('app').hidden=true;$('join-screen').hidden=false;$('device-name').value=/Android/i.test(navigator.userAgent)?'Мой Android':/iPhone|iPad/i.test(navigator.userAgent)?'Мой iPhone':'Мой ноутбук';if($('settings-dialog').open)$('settings-dialog').close();}
 function showUpdate(){events?.close();events=null;me=null;$('app').hidden=true;$('join-screen').hidden=false;$('join-error').textContent='Версия главного устройства несовместима. Обновите Рядом на всех устройствах.';}
 function applyState(data,generation=stateGeneration){
  if(generation!==stateGeneration)return;
@@ -28,7 +37,7 @@ function applyState(data,generation=stateGeneration){
  if(reset){messages.clear();canLoadOlder=false;stateGeneration++;}
  $('change-role-button').hidden=!data.server.localControls;maxFile=data.maxFile;data.messages.forEach(m=>messages.set(m.id,m));canLoadOlder=data.total>messages.size;$('app').hidden=false;$('join-screen').hidden=true;$('header-clear-chat-button').hidden=!me.host;
  $('app-version').textContent=`Приложение ${(typeof window.ryadom?.appVersion==='function'?window.ryadom.appVersion():window.ryadom?.appVersion)||'—'} · главное ${data.server.version||'—'}`;
- renderDevices();renderMessages();renderPending();updateButtons();saveTrustRoster();
+ renderDevices();renderMessages();renderPending();updateButtons();saveTrustRoster();ensureE2EE();
 }
 async function sync(){
  if(syncing||!me)return;syncing=true;const generation=stateGeneration;

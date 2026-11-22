@@ -25,7 +25,7 @@ foreach ($dir in @($BuildRoot, "$BuildRoot\classes", "$BuildRoot\gen", "$BuildRo
 Copy-Item -LiteralPath "$ProjectRoot\android\res" -Destination "$BuildRoot" -Recurse -Force
 Copy-Item -LiteralPath "$ProjectRoot\android\src" -Destination "$BuildRoot" -Recurse -Force
 Copy-Item -LiteralPath "$ProjectRoot\android\AndroidManifest.xml" -Destination "$BuildRoot\AndroidManifest.xml" -Force
-foreach($asset in @('index.html','app.js','style.css','icon.svg')) { Copy-Item -LiteralPath "$ProjectRoot\public\$asset" -Destination "$BuildRoot\assets\$asset" -Force }
+foreach($asset in @('index.html','app.js','e2ee.js','style.css','icon.svg')) { Copy-Item -LiteralPath "$ProjectRoot\public\$asset" -Destination "$BuildRoot\assets\$asset" -Force }
 function Invoke-Checked([string]$Exe, [string[]]$Arguments) { & $Exe @Arguments; if ($LASTEXITCODE -ne 0) { throw "Build step failed: $Exe" } }
 Invoke-Checked "$BuildTools\aapt2.exe" @('compile','--dir',"$BuildRoot\res",'-o',"$BuildRoot\resources.zip")
 Invoke-Checked "$BuildTools\aapt2.exe" @('link','-o',"$BuildRoot\base.apk",'-I',$AndroidJar,'--manifest',"$BuildRoot\AndroidManifest.xml",'--java',"$BuildRoot\gen",'-A',"$BuildRoot\assets",'--auto-add-overlay',"$BuildRoot\resources.zip")

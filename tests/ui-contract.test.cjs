@@ -31,6 +31,9 @@ test('0.3.0 UI exposes deletion, clear, downloads and version controls', () => {
  assert.match(js, /openDownloads/);
  assert.match(js, /nativeAuth/);
  assert.match(js, /deviceToken/);
+ assert.match(js, /ensureE2EE/);
+ assert.match(html, /e2ee\.js/);
+ assert.match(fs.readFileSync(path.join(root, 'public/e2ee.js'), 'utf8'), /ECDH/);
  assert.match(js, /forget-offline/);
  assert.match(html, /История и главное устройство/);
  assert.match(html, /Забыть неактивные устройства/);

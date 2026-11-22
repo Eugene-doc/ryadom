@@ -239,7 +239,7 @@ function sniff(file) {
  return 'application/octet-stream';
 }
 function getAsset(name) { return sea.isSea() ? Buffer.from(sea.getAsset(name)) : fs.readFileSync(path.join(__dirname, 'public', name)); }
-const assets = new Map(['index.html', 'app.js', 'style.css', 'icon.svg'].map(x => [x, getAsset(x)]));
+const assets = new Map(['index.html', 'app.js', 'e2ee.js', 'style.css', 'icon.svg'].map(x => [x, getAsset(x)]));
 
 const clients = new Map();
 const attempts = new Map();

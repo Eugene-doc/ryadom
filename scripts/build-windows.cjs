@@ -4,7 +4,7 @@ const root=path.resolve(__dirname,'..');process.chdir(root);
 const version=JSON.parse(fs.readFileSync('package.json','utf8')).version;
 const output=`dist/Ryadom-Windows-${version}.exe`;
 fs.mkdirSync('dist',{recursive:true});fs.mkdirSync('.build',{recursive:true});
-const assets=Object.fromEntries(['index.html','style.css','app.js','icon.svg'].map(name=>[name,path.join(root,'public',name)]));
+const assets=Object.fromEntries(['index.html','style.css','app.js','e2ee.js','icon.svg'].map(name=>[name,path.join(root,'public',name)]));
 const config={main:path.join(root,'server.cjs'),output:path.join(root,'.build','RyadomHost.exe'),disableExperimentalSEAWarning:true,useCodeCache:false,execArgvExtension:'none',assets};
 fs.writeFileSync('.build/sea-config.json',JSON.stringify(config,null,2));
 execFileSync(process.execPath,['--build-sea','.build/sea-config.json'],{stdio:'inherit'});
