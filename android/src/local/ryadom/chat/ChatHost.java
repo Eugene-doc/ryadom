@@ -18,7 +18,7 @@ import java.util.concurrent.*;
 final class ChatHost implements AutoCloseable {
  interface Assets {byte[] read(String name) throws IOException;}
  interface Mutation {void apply(JSONObject next) throws Exception;}
- static final String VERSION="0.5.0";static final int PROTOCOL=4;
+ static final String VERSION="0.5.1";static final int PROTOCOL=4;
  static final long MAX_FILE=512L*1024*1024;
  static final int MAX_STREAMS=8,MAX_EVENT_LOG=500,MAX_PENDING_DEFAULT=5;
  final File directory,files,stateFile;final Assets assets;final List<String> addresses;final int port;
@@ -394,7 +394,7 @@ final class ChatHost implements AutoCloseable {
   if(!request.header("origin").isEmpty()&&!request.header("origin").equals("http://"+request.header("host")))throw new MiniHttp.Failure(403,"Недопустимый источник");
   if(!request.method.equals("GET")&&!request.method.equals("HEAD")&&!request.header("x-ryadom").equals("1"))throw new MiniHttp.Failure(403,"Недопустимый запрос");
   String route=request.path;
-  if(request.method.equals("GET")&&Arrays.asList("/","/app.js","/style.css","/icon.svg").contains(route)){
+  if(request.method.equals("GET")&&Arrays.asList("/","/app.js","/e2ee.js","/style.css","/icon.svg").contains(route)){
    String asset=route.equals("/")?"index.html":route.substring(1);String mime=asset.endsWith(".html")?"text/html; charset=utf-8":asset.endsWith(".js")?"text/javascript; charset=utf-8":asset.endsWith(".css")?"text/css; charset=utf-8":"image/svg+xml";
    request.reply(200,mime,assets.read(asset),null);return;
   }

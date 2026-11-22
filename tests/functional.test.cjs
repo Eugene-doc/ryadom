@@ -45,6 +45,13 @@ async function stop() { if (proc && proc.exitCode === null) { const done = new P
 before(start);
 after(async () => { await stop(); fs.rmSync(dir, { recursive: true, force: true }); });
 
+test('browser E2E asset is served by every host', async () => {
+ const r = await fetch(`${base}/e2ee.js`);
+ assert.equal(r.status, 200, logs);
+ assert.match(r.headers.get('content-type') || '', /javascript/i);
+ assert.match(await r.text(), /RyadomE2EE/);
+});
+
 async function req(route, { method = 'GET', body, cookie, headers = {} } = {}) {
  const r = await fetch(base + route, {
   method,

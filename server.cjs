@@ -8,7 +8,7 @@ const { pipeline } = require('node:stream/promises');
 const { Transform } = require('node:stream');
 const { DatabaseSync } = require('node:sqlite');
 const sea = require('node:sea');
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 const PROTOCOL = 4;
 const MAX_FILE = 512 * 1024 * 1024;
 const PORT = Number(process.env.RYADOM_PORT || 4280);
@@ -239,7 +239,8 @@ function sniff(file) {
  return 'application/octet-stream';
 }
 function getAsset(name) { return sea.isSea() ? Buffer.from(sea.getAsset(name)) : fs.readFileSync(path.join(__dirname, 'public', name)); }
-const assets = new Map(['index.html', 'app.js', 'e2ee.js', 'style.css', 'icon.svg'].map(x => [x, getAsset(x)]));
+const assetNames = ['index.html', 'app.js', 'e2ee.js', 'style.css', 'icon.svg'];
+const assets = new Map(assetNames.map(x => [x, getAsset(x)]));
 
 const clients = new Map();
 const attempts = new Map();
@@ -389,7 +390,7 @@ const server = http.createServer(async (req, res) => {
    if (route === '/api/local/quit' && req.method === 'POST') { send(res, 200, { ok: true }); setTimeout(shutdown, 200); return; }
    throw error(404, 'Не найдено');
   }
-  if (req.method === 'GET' && ['/', '/app.js', '/style.css', '/icon.svg'].includes(route)) {
+  if (req.method === 'GET' && (route === '/' || assetNames.some(name => route === '/' + name))) {
    const name = route === '/' ? 'index.html' : route.slice(1);
    res.writeHead(200, { 'Content-Type': { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' }[name.split('.').pop()] }); return res.end(assets.get(name));
   }

@@ -1,4 +1,4 @@
-param([string]$SdkPath='C:\Program Files (x86)\Android\android-sdk',[string]$JdkPath='C:\Program Files\Android\openjdk\jdk-21.0.8')
+﻿param([string]$SdkPath='C:\Program Files (x86)\Android\android-sdk',[string]$JdkPath='C:\Program Files\Android\openjdk\jdk-21.0.8')
 $ErrorActionPreference='Stop'
 $ProjectRoot=Split-Path -Parent $PSScriptRoot
 $BuildRoot=Join-Path $env:TEMP 'RyadomAndroidBuild'
@@ -31,5 +31,5 @@ Invoke-JvmTest 'local.ryadom.chat.TimeoutTest' @{RYADOM_HTTP_HEADER_TIMEOUT_MS='
 Invoke-JvmTest 'local.ryadom.chat.QuotaTest' @{RYADOM_MAX_TOTAL_MB='1';RYADOM_MAX_DEVICE_MB='1';RYADOM_MIN_FREE_MB='0'}
 $env:RYADOM_TEST_JAVA="$JdkPath\bin\java.exe"
 $env:RYADOM_TEST_CLASSPATH=$Classpath
-try { & node --test "$ProjectRoot\tests\server.test.cjs" "$ProjectRoot\tests\security.test.cjs" "$ProjectRoot\tests\proxy.test.cjs" "$ProjectRoot\tests\functional.test.cjs"; if($LASTEXITCODE -ne 0){throw 'Android host / direct proxy integration tests failed'} }
+try { & node --test "$ProjectRoot\tests\server.test.cjs" "$ProjectRoot\tests\security.test.cjs" "$ProjectRoot\tests\proxy.test.cjs" "$ProjectRoot\tests\functional.test.cjs" "$ProjectRoot\tests\e2ee.test.cjs"; if($LASTEXITCODE -ne 0){throw 'Android host / direct proxy integration tests failed'} }
 finally { Remove-Item Env:\RYADOM_TEST_JAVA,Env:\RYADOM_TEST_CLASSPATH }

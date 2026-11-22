@@ -1,11 +1,11 @@
 {
   "name": "ryadom-lan-chat",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "Личный чат для устройств в одной домашней сети",
   "scripts": {
     "start": "node server.cjs",
-    "test": "node --test tests/server.test.cjs tests/security.test.cjs tests/proxy.test.cjs tests/functional.test.cjs tests/version.test.cjs tests/ui-contract.test.cjs tests/windows-shell.test.cjs",
+    "test": "node --test tests/server.test.cjs tests/security.test.cjs tests/proxy.test.cjs tests/functional.test.cjs tests/e2ee.test.cjs tests/version.test.cjs tests/ui-contract.test.cjs tests/windows-shell.test.cjs",
     "build:windows": "node scripts/build-windows.cjs",
     "sign:release": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/sign-release.ps1"
   },
