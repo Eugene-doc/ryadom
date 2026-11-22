@@ -39,7 +39,9 @@ db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
  CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, type TEXT NOT NULL, title TEXT, ownerDeviceId TEXT, created TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 0, deletionRevision INTEGER NOT NULL DEFAULT 0, epoch INTEGER NOT NULL DEFAULT 0);
  CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, type TEXT NOT NULL, chatId TEXT NOT NULL, actorId TEXT, status TEXT NOT NULL, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, result TEXT, error TEXT);
  CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS revoked_devices (id TEXT PRIMARY KEY, revokedAt TEXT NOT NULL);`);
+ CREATE TABLE IF NOT EXISTS revoked_devices (id TEXT PRIMARY KEY, revokedAt TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS chat_members (chatId TEXT NOT NULL, deviceId TEXT NOT NULL, joinedAt TEXT NOT NULL, lastReadSeq INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chatId,deviceId));
+ CREATE TABLE IF NOT EXISTS device_keys (sessionId TEXT NOT NULL, deviceId TEXT NOT NULL, publicKey TEXT NOT NULL, algorithm TEXT NOT NULL, createdAt TEXT NOT NULL, PRIMARY KEY(sessionId,deviceId));`);
 function columnExists(table, column) { try { return db.prepare(`PRAGMA table_info(${table})`).all().some(x => x.name === column); } catch { return true; } }
 if (!columnExists('files', 'deviceId')) { try { db.exec('ALTER TABLE files ADD COLUMN deviceId TEXT'); } catch {} }
 if (!columnExists('messages', 'chatId')) { try { db.exec("ALTER TABLE messages ADD COLUMN chatId TEXT NOT NULL DEFAULT 'legacy'"); } catch {} }
@@ -48,6 +50,8 @@ if (!columnExists('messages', 'deletedBy')) { try { db.exec('ALTER TABLE message
 if (!columnExists('files', 'chatId')) { try { db.exec("ALTER TABLE files ADD COLUMN chatId TEXT NOT NULL DEFAULT 'legacy'"); } catch {} }
 if (!columnExists('files', 'messageId')) { try { db.exec('ALTER TABLE files ADD COLUMN messageId TEXT'); } catch {} }
 if (!columnExists('files', 'state')) { try { db.exec("ALTER TABLE files ADD COLUMN state TEXT NOT NULL DEFAULT 'ready'"); } catch {} }
+if (!columnExists('messages', 'encrypted')) { try { db.exec('ALTER TABLE messages ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0'); } catch {} }
+if (!columnExists('files', 'encrypted')) { try { db.exec('ALTER TABLE files ADD COLUMN encrypted INTEGER NOT NULL DEFAULT 0'); } catch {} }
 if (!columnExists('chats', 'deletionRevision')) { try { db.exec('ALTER TABLE chats ADD COLUMN deletionRevision INTEGER NOT NULL DEFAULT 0'); } catch {} }
 if (!columnExists('chats', 'sessionId')) { try { db.exec("ALTER TABLE chats ADD COLUMN sessionId TEXT NOT NULL DEFAULT ''"); } catch {} }
 if (!columnExists('chats', 'term')) { try { db.exec('ALTER TABLE chats ADD COLUMN term INTEGER NOT NULL DEFAULT 0'); } catch {} }
@@ -87,9 +91,9 @@ function importTrustRoster() {
 const sha = x => crypto.createHash('sha256').update(x).digest('hex');
 const now = () => new Date().toISOString();
 const iso = ms => new Date(ms).toISOString();
-function chatRow() { return db.prepare('SELECT * FROM chats WHERE id=?').get('legacy'); }
-function bumpRevision() { db.prepare('UPDATE chats SET revision=revision+1 WHERE id=?').run('legacy'); return chatRow().revision; }
-function bumpDeletion() { db.prepare('UPDATE chats SET revision=revision+1,deletionRevision=deletionRevision+1 WHERE id=?').run('legacy'); return chatRow().revision; }
+function chatRow(id = 'legacy') { return db.prepare('SELECT * FROM chats WHERE id=?').get(id); }
+function bumpRevision(chatId = 'legacy') { db.prepare('UPDATE chats SET revision=revision+1 WHERE id=?').run(chatId); return chatRow(chatId).revision; }
+function bumpDeletion(chatId = 'legacy') { db.prepare('UPDATE chats SET revision=revision+1,deletionRevision=deletionRevision+1 WHERE id=?').run(chatId); return chatRow(chatId).revision; }
 function operationResponse(row) {
  let result = {}; try { result = JSON.parse(row.result || '{}'); } catch {}
  return { id: row.id, operationId: row.id, type: row.type, chatId: row.chatId, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt, error: row.error, ...result };
@@ -191,19 +195,39 @@ function closeClients(match, type) {
  }
  broadcast('devices', publicDevices());
 }
-function message(row) { return { ...row, file: row.file ? JSON.parse(row.file) : null, sessionId: chatRow().sessionId, term: chatRow().term }; }
-function addMessage(d, text, file, requestId, announce = true) {
+function message(row) { return { ...row, encrypted: !!row.encrypted, file: row.file ? JSON.parse(row.file) : null, sessionId: chatRow().sessionId, term: chatRow().term }; }
+function addMessage(d, text, file, requestId, announce = true, chatId = 'legacy', encrypted = 0) {
  if (sessionEnding) throw error(409, 'Чат завершается. Новые сообщения недоступны');
  const old = db.prepare('SELECT * FROM messages WHERE requestId=?').get(requestId);
  if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); if (old.deviceId !== d.id) throw error(409, 'Повторите отправку'); return message(old); }
  const id = crypto.randomUUID();
- db.prepare('INSERT INTO messages (id,deviceId,deviceName,text,file,created,requestId,chatId) VALUES (?,?,?,?,?,?,?,?)').run(id, d.id, d.name, text, file ? JSON.stringify(file) : null, now(), requestId, 'legacy');
+ db.prepare('INSERT INTO messages (id,deviceId,deviceName,text,file,created,requestId,chatId,encrypted) VALUES (?,?,?,?,?,?,?,?,?)').run(id, d.id, d.name, text, file ? JSON.stringify(file) : null, now(), requestId, chatId, encrypted ? 1 : 0);
  const result = message(db.prepare('SELECT * FROM messages WHERE id=?').get(id));
- result.revision = bumpRevision();
- result.epoch = chatRow().epoch;
+ result.revision = bumpRevision(chatId);
+ result.epoch = chatRow(chatId).epoch;
  if (announce) broadcast('message', result); return result;
 }
 function cleanName(value) { return String(value || '').replace(/[\x00-\x1f\x7f/\\]/g, '').trim().slice(0, 180) || 'Файл'; }
+function privateChatId(first, second) { return 'private-' + sha([first, second].sort().join(':')).slice(0, 24); }
+function chatAccess(deviceRow, chatId) {
+ const chat = chatRow(chatId);
+ if (!chat) throw error(404, 'Чат не найден');
+ if (chatId === 'legacy') return chat;
+ const member = db.prepare('SELECT 1 FROM chat_members WHERE chatId=? AND deviceId=?').get(chatId, deviceRow.id);
+ if (!member) throw error(403, 'Нет доступа к чату');
+ return chat;
+}
+function chatSummary(deviceRow, chat) {
+ const member = chat.id === 'legacy' ? null : db.prepare('SELECT lastReadSeq FROM chat_members WHERE chatId=? AND deviceId=?').get(chat.id, deviceRow.id);
+ const last = db.prepare('SELECT id,deviceId,text,file,created,seq,encrypted FROM messages WHERE chatId=? AND deletedAt IS NULL ORDER BY seq DESC LIMIT 1').get(chat.id);
+ const unread = chat.id === 'legacy' ? 0 : db.prepare('SELECT count(*) AS n FROM messages WHERE chatId=? AND deletedAt IS NULL AND seq>? AND deviceId<>?').get(chat.id, member ? member.lastReadSeq : 0, deviceRow.id).n;
+ const members = chat.id === 'legacy' ? [] : db.prepare('SELECT d.id,d.name FROM chat_members m JOIN devices d ON d.id=m.deviceId WHERE m.chatId=? ORDER BY m.joinedAt').all(chat.id);
+ return { id: chat.id, type: chat.type, title: chat.title, sessionId: chat.sessionId, revision: chat.revision, epoch: chat.epoch, unread, last: last ? { id: last.id, deviceId: last.deviceId, text: last.encrypted ? '' : last.text, encrypted: !!last.encrypted, created: last.created, seq: last.seq } : null, members };
+}
+function chatsFor(deviceRow) {
+ const rows = db.prepare("SELECT * FROM chats WHERE id='legacy' OR id IN (SELECT chatId FROM chat_members WHERE deviceId=?) ORDER BY created").all(deviceRow.id);
+ return rows.map(chat => chatSummary(deviceRow, chat));
+}
 function sniff(file) {
  const fd = fs.openSync(file, 'r'); const b = Buffer.alloc(32); try { fs.readSync(fd, b, 0, 32, 0); } finally { fs.closeSync(fd); }
  if (b.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return 'image/png';
@@ -255,7 +279,7 @@ function clearEphemeralData() {
    try { fs.rmSync(path.join(uploads, name), { force: true, recursive: true }); } catch { pending = true; }
   }
  } catch { pending = true; }
- db.exec('DELETE FROM messages; DELETE FROM files; DELETE FROM operations;');
+ db.exec("DELETE FROM messages; DELETE FROM files; DELETE FROM operations; DELETE FROM chat_members; DELETE FROM device_keys; DELETE FROM chats WHERE id<>'legacy';");
  db.prepare('UPDATE chats SET revision=0,deletionRevision=0,epoch=0 WHERE id=?').run('legacy');
  return pending;
 }
@@ -435,6 +459,46 @@ const server = http.createServer(async (req, res) => {
   }
   const d = device(req); if (!d) throw error(401, 'Подключите устройство по коду');
   if (sessionEnding && req.method !== 'GET' && route !== '/api/host/stop' && route !== '/api/logout') throw error(409, 'Чат завершается. Дождитесь остановки');
+  if (route === '/api/chats' && req.method === 'GET') return send(res, 200, { chats: chatsFor(d) });
+  if (route === '/api/chats' && req.method === 'POST') {
+   const body = await json(req);
+   if (body.type !== 'private') throw error(400, 'Пока поддерживаются только личные чаты');
+   const peerId = String(body.peerDeviceId || '');
+   if (!peerId || peerId === d.id) throw error(400, 'Выберите другое устройство');
+   const peer = db.prepare('SELECT id,name FROM devices WHERE id=?').get(peerId);
+   if (!peer) throw error(404, 'Устройство не найдено');
+   const id = privateChatId(d.id, peerId);
+   let chat = chatRow(id);
+   if (!chat) {
+    db.prepare("INSERT INTO chats (id,type,title,ownerDeviceId,created,revision,deletionRevision,epoch,sessionId,term,hostDeviceId) VALUES (?,?,?,?,?,0,0,0,?,?,?)").run(id, 'private', peer.name, d.id, now(), chatRow().sessionId, chatRow().term, chatRow().hostDeviceId);
+    db.prepare('INSERT OR IGNORE INTO chat_members (chatId,deviceId,joinedAt,lastReadSeq) VALUES (?,?,?,0)').run(id, d.id, now());
+    db.prepare('INSERT OR IGNORE INTO chat_members (chatId,deviceId,joinedAt,lastReadSeq) VALUES (?,?,?,0)').run(id, peerId, now());
+    logEvent('private_chat_created', d.name + ' ↔ ' + peer.name, '');
+    chat = chatRow(id);
+   }
+   return send(res, 201, { chat: chatSummary(d, chat) });
+  }
+  if (route.startsWith('/api/chats/') && route.endsWith('/read') && req.method === 'POST') {
+   const chatId = decodeURIComponent(route.slice('/api/chats/'.length, -'/read'.length));
+   chatAccess(d, chatId);
+   const body = await json(req);
+   const seq = Math.max(0, Number(body.seq) || 0);
+   if (chatId !== 'legacy') db.prepare('UPDATE chat_members SET lastReadSeq=MAX(lastReadSeq,?) WHERE chatId=? AND deviceId=?').run(seq, chatId, d.id);
+   return send(res, 200, { ok: true, chatId, seq });
+  }
+  if (route === '/api/keys' && req.method === 'POST') {
+   const body = await json(req);
+   const publicKey = String(body.publicKey || '');
+   const algorithm = String(body.algorithm || 'ECDH-P256').slice(0, 40);
+   if (publicKey.length < 20 || publicKey.length > 4096) throw error(400, 'Некорректный публичный ключ');
+   db.prepare('INSERT INTO device_keys (sessionId,deviceId,publicKey,algorithm,createdAt) VALUES (?,?,?,?,?) ON CONFLICT(sessionId,deviceId) DO UPDATE SET publicKey=excluded.publicKey,algorithm=excluded.algorithm,createdAt=excluded.createdAt').run(chatRow().sessionId, d.id, publicKey, algorithm, now());
+   return send(res, 200, { ok: true });
+  }
+  if (route === '/api/keys' && req.method === 'GET') {
+   const ids = String(url.searchParams.get('deviceIds') || '').split(',').map(x => x.trim()).filter(x => /^[a-zA-Z0-9_-]{1,80}$/.test(x));
+   const keys = ids.length ? db.prepare(`SELECT deviceId,publicKey,algorithm FROM device_keys WHERE sessionId=? AND deviceId IN (${ids.map(() => '?').join(',')})`).all(chatRow().sessionId, ...ids) : [];
+   return send(res, 200, { keys });
+  }
   if (route === '/api/trust/roster' && req.method === 'GET') {
    const devices = db.prepare('SELECT id,name,token,created FROM devices WHERE host=0 ORDER BY created').all().map(x => ({ id: x.id, name: x.name, tokenHash: x.token, created: x.created }));
    const revoked = db.prepare('SELECT id FROM revoked_devices ORDER BY revokedAt').all().map(x => x.id);
@@ -442,25 +506,30 @@ const server = http.createServer(async (req, res) => {
   }
   if (route === '/api/state' && req.method === 'GET') {
    const chat = chatRow();
-   const messages = db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL ORDER BY seq DESC LIMIT 100').all().reverse().map(message);
-   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, sessionId: chat.sessionId, term: chat.term, hostDeviceId: chat.hostDeviceId, revision: chat.revision, deletionRevision: chat.deletionRevision, epoch: chat.epoch }, devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare('SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL').get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), version: VERSION, protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
+   const messages = db.prepare("SELECT * FROM messages WHERE deletedAt IS NULL AND chatId='legacy' ORDER BY seq DESC LIMIT 100").all().reverse().map(message);
+   const state = { me: { id: d.id, name: d.name, host: !!d.host }, chat: { id: chat.id, sessionId: chat.sessionId, term: chat.term, hostDeviceId: chat.hostDeviceId, revision: chat.revision, deletionRevision: chat.deletionRevision, epoch: chat.epoch }, chats: chatsFor(d), devices: publicDevices(), messages, maxFile: MAX_FILE, total: db.prepare("SELECT count(*) AS n FROM messages WHERE deletedAt IS NULL AND chatId='legacy'").get().n, server: { addresses: lanAddresses().map(ip => `http://${ip}:${PORT}`), version: VERSION, protocol: PROTOCOL, direct: !!NATIVE_KEY, localControls: !req.socket.ryadomPeer && !!process.env.RYADOM_ROLE_SIGNAL, tls: process.env.RYADOM_TLS === '1', fingerprint: process.env.RYADOM_TLS_FINGERPRINT || undefined } };
    if (d.host) { state.pairing = pairing; state.pendingRequests = pendingList(); state.storage = { totalBytes: MAX_TOTAL_BYTES, usedBytes: totalBytes(), freeBytes: freeDiskBytes() }; }
    return send(res, 200, state);
   }
   if (route === '/api/messages' && req.method === 'GET') {
+   const chatId = url.searchParams.get('chatId') || 'legacy';
+   chatAccess(d, chatId);
    if (url.searchParams.has('after')) {
     const after = Math.max(0, Number(url.searchParams.get('after')) || 0);
-    return send(res, 200, db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL AND seq>? ORDER BY seq LIMIT 100').all(after).map(message));
+    return send(res, 200, db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL AND chatId=? AND seq>? ORDER BY seq LIMIT 100').all(chatId, after).map(message));
    }
    const before = Number(url.searchParams.get('before')) || Number.MAX_SAFE_INTEGER;
-   return send(res, 200, db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL AND seq<? ORDER BY seq DESC LIMIT 100').all(before).reverse().map(message));
+   return send(res, 200, db.prepare('SELECT * FROM messages WHERE deletedAt IS NULL AND chatId=? AND seq<? ORDER BY seq DESC LIMIT 100').all(chatId, before).reverse().map(message));
   }
   if (route === '/api/messages' && req.method === 'POST') {
    if (!allowRate(d.id, 'msg', MSG_PER_MIN)) throw error(429, 'Слишком часто. Подождите минуту');
    const body = await json(req); const text = String(body.text || '').trim();
-   if (!text || text.length > 12000) throw error(400, 'Сообщение должно содержать от 1 до 12 000 символов');
+   const chatId = String(body.chatId || 'legacy');
+   chatAccess(d, chatId);
+   const limit = body.encrypted ? 64000 : 12000;
+   if (!text || text.length > limit) throw error(400, `Сообщение должно содержать от 1 до ${limit} символов`);
    const requestId = String(body.requestId || crypto.randomUUID()).slice(0, 80);
-   return send(res, 201, addMessage(d, text, null, requestId));
+   return send(res, 201, addMessage(d, text, null, requestId, true, chatId, body.encrypted ? 1 : 0));
   }
   if (route.startsWith('/api/messages/') && req.method === 'DELETE') {
    const id = decodeURIComponent(route.slice('/api/messages/'.length));
@@ -550,6 +619,9 @@ const server = http.createServer(async (req, res) => {
    if (!allowRate(d.id, 'up', UPLOAD_PER_MIN)) throw error(429, 'Слишком много передач. Подождите минуту');   const size = Number(req.headers['content-length']);
    if (!Number.isSafeInteger(size) || size < 1 || size > MAX_FILE) throw error(413, 'Файл должен быть от 1 байта до 512 МБ');
    const requestId = String(url.searchParams.get('requestId') || crypto.randomUUID()).slice(0, 80);
+   const chatId = url.searchParams.get('chatId') || 'legacy';
+   chatAccess(d, chatId);
+   const encrypted = url.searchParams.get('encrypted') === '1';
    const old = db.prepare('SELECT * FROM messages WHERE requestId=? AND deviceId=?').get(requestId, d.id);
    if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); req.resume(); return send(res, 200, message(old)); }
    if (uploadJobs.has(requestId) || (activeUploads.get(d.id) || 0) >= 2) throw error(429, 'Дождитесь завершения текущей передачи');
@@ -557,7 +629,7 @@ const server = http.createServer(async (req, res) => {
    const epoch = chatRow().epoch;
    const release = reserveBytes(d.id, size);
    uploadJobs.add(requestId); activeUploads.set(d.id, (activeUploads.get(d.id) || 0) + 1);
-   uploadMeta.set(requestId, { chatId: 'legacy', epoch, sessionId: chatRow().sessionId, deviceId: d.id, req });
+   uploadMeta.set(requestId, { chatId, epoch, sessionId: chatRow().sessionId, deviceId: d.id, req });
    const id = crypto.randomUUID(); const tmp = path.join(uploads, `${id}.part`); const final = path.join(uploads, id); let committed = false;
    try {
     let count = 0;
@@ -570,7 +642,7 @@ const server = http.createServer(async (req, res) => {
     fs.renameSync(tmp, final);
     db.exec('BEGIN');
     let result;
-    try { result = addMessage(d, '', f, requestId, false); db.prepare('INSERT INTO files (id,name,mime,size,deviceId,chatId,messageId,state) VALUES (?,?,?,?,?,?,?,?)').run(id, f.name, f.mime, count, d.id, 'legacy', result.id, 'ready'); db.exec('COMMIT'); committed = true; }
+    try { result = addMessage(d, '', f, requestId, false, chatId, encrypted ? 1 : 0); db.prepare('INSERT INTO files (id,name,mime,size,deviceId,chatId,messageId,state,encrypted) VALUES (?,?,?,?,?,?,?,?,?)').run(id, f.name, f.mime, count, d.id, chatId, result.id, 'ready', encrypted ? 1 : 0); db.exec('COMMIT'); committed = true; }
     catch (e) { db.exec('ROLLBACK'); throw e; }
     broadcast('message', result);
     return send(res, 201, result);
@@ -578,7 +650,8 @@ const server = http.createServer(async (req, res) => {
   }
   if (route.startsWith('/files/') && ['GET', 'HEAD'].includes(req.method)) {
    const f = db.prepare('SELECT * FROM files WHERE id=?').get(route.slice(7));
-   if (!f || f.state !== 'ready' || f.chatId !== 'legacy' || !f.messageId || !db.prepare('SELECT id FROM messages WHERE id=? AND deletedAt IS NULL').get(f.messageId)) throw error(404, 'Файл не найден');
+   if (!f || f.state !== 'ready' || !f.messageId || !db.prepare('SELECT id FROM messages WHERE id=? AND deletedAt IS NULL').get(f.messageId)) throw error(404, 'Файл не найден');
+   chatAccess(d, f.chatId);
    const disk = path.join(uploads, f.id); if (!fs.existsSync(disk)) throw error(404, 'Файл удалён с компьютера');
    let start = 0, end = f.size - 1, status = 200;
    if (req.headers.range) {

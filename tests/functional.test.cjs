@@ -97,6 +97,38 @@ async function upload(cookie, name, requestId) {
  return data;
 }
 
+test('private chat is scoped to its two members and exposes session keys', async () => {
+ const host = await login();
+ const alice = await pair(host, 'Алиса');
+ const bob = await pair(host, 'Боб');
+ const stranger = await pair(host, 'Чужой');
+ const aliceState = await req('/api/state', { cookie: alice });
+ const bobState = await req('/api/state', { cookie: bob });
+ const aliceId = aliceState.data.me.id;
+ const bobId = bobState.data.me.id;
+ const created = await req('/api/chats', { method: 'POST', body: { type: 'private', peerDeviceId: bobId }, cookie: alice });
+ assert.equal(created.r.status, 201, JSON.stringify(created.data) + logs);
+ const chatId = created.data.chat.id;
+ assert.equal(created.data.chat.type, 'private');
+ const list = await req('/api/chats', { cookie: bob });
+ assert.ok(list.data.chats.some(chat => chat.id === chatId));
+ await req('/api/keys', { method: 'POST', body: { publicKey: 'alice-public-key-0123456789', algorithm: 'ECDH-P256' }, cookie: alice });
+ await req('/api/keys', { method: 'POST', body: { publicKey: 'bob-public-key-0123456789', algorithm: 'ECDH-P256' }, cookie: bob });
+ const keys = await req(`/api/keys?deviceIds=${aliceId},${bobId}`, { cookie: alice });
+ assert.equal(keys.data.keys.length, 2);
+ const sent = await req('/api/messages', { method: 'POST', body: { chatId, text: '{"v":1,"iv":"aXY=","data":"Y2lwaGVy"}', encrypted: true, requestId: 'private-msg-1' }, cookie: alice });
+ assert.equal(sent.r.status, 201, JSON.stringify(sent.data) + logs);
+ assert.equal(sent.data.chatId, chatId);
+ assert.equal(sent.data.encrypted, true);
+ const bobMessages = await req(`/api/messages?chatId=${encodeURIComponent(chatId)}`, { cookie: bob });
+ assert.equal(bobMessages.data.length, 1);
+ assert.equal((await req(`/api/messages?chatId=${encodeURIComponent(chatId)}`, { cookie: stranger })).r.status, 403);
+ const read = await req(`/api/chats/${encodeURIComponent(chatId)}/read`, { method: 'POST', body: { seq: sent.data.seq }, cookie: bob });
+ assert.equal(read.r.status, 200);
+ const unread = (await req('/api/chats', { cookie: bob })).data.chats.find(chat => chat.id === chatId);
+ assert.equal(unread.unread, 0);
+});
+
 test('protocol 3 clients are rejected with update required', async () => {
  const host = await login();
  const state = await req('/api/state', { cookie: host });
