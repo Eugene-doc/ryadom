@@ -622,6 +622,8 @@ const server = http.createServer(async (req, res) => {
    const chatId = url.searchParams.get('chatId') || 'legacy';
    chatAccess(d, chatId);
    const encrypted = url.searchParams.get('encrypted') === '1';
+   const encryptedMeta = encrypted ? String(url.searchParams.get('meta') || '') : '';
+   if (encryptedMeta.length > 16000) throw error(400, 'Слишком большой зашифрованный заголовок файла');
    const old = db.prepare('SELECT * FROM messages WHERE requestId=? AND deviceId=?').get(requestId, d.id);
    if (old) { if (old.deletedAt) throw error(410, 'Сообщение было удалено'); req.resume(); return send(res, 200, message(old)); }
    if (uploadJobs.has(requestId) || (activeUploads.get(d.id) || 0) >= 2) throw error(429, 'Дождитесь завершения текущей передачи');
@@ -638,11 +640,11 @@ const server = http.createServer(async (req, res) => {
     if (count !== size) throw error(400, 'Передача прервалась. Отправьте файл ещё раз');
     if (!db.prepare('SELECT id FROM devices WHERE id=?').get(d.id)) throw error(401, 'Доступ устройства отозван');
     if (chatRow().epoch !== epoch || sessionEnding || chatRow().sessionId !== requestSessionId) throw error(409, 'Чат был очищен. Отправьте файл заново');
-    const f = { id, name: cleanName(url.searchParams.get('name')), mime: sniff(tmp), size: count };
+    const f = encrypted ? { id, name: 'encrypted', mime: 'application/octet-stream', size: count } : { id, name: cleanName(url.searchParams.get('name')), mime: sniff(tmp), size: count };
     fs.renameSync(tmp, final);
     db.exec('BEGIN');
     let result;
-    try { result = addMessage(d, '', f, requestId, false, chatId, encrypted ? 1 : 0); db.prepare('INSERT INTO files (id,name,mime,size,deviceId,chatId,messageId,state,encrypted) VALUES (?,?,?,?,?,?,?,?,?)').run(id, f.name, f.mime, count, d.id, chatId, result.id, 'ready', encrypted ? 1 : 0); db.exec('COMMIT'); committed = true; }
+    try { result = addMessage(d, encryptedMeta, f, requestId, false, chatId, encrypted ? 1 : 0); db.prepare('INSERT INTO files (id,name,mime,size,deviceId,chatId,messageId,state,encrypted) VALUES (?,?,?,?,?,?,?,?,?)').run(id, f.name, f.mime, count, d.id, chatId, result.id, 'ready', encrypted ? 1 : 0); db.exec('COMMIT'); committed = true; }
     catch (e) { db.exec('ROLLBACK'); throw e; }
     broadcast('message', result);
     return send(res, 201, result);

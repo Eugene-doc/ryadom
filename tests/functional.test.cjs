@@ -127,6 +127,18 @@ test('private chat is scoped to its two members and exposes session keys', async
  assert.equal(read.r.status, 200);
  const unread = (await req('/api/chats', { cookie: bob })).data.chats.find(chat => chat.id === chatId);
  assert.equal(unread.unread, 0);
+ const ciphertext = Buffer.from('ciphertext-file-bytes');
+ const upload = await fetch(`${base}/api/files?name=encrypted&requestId=private-file-1&chatId=${encodeURIComponent(chatId)}&encrypted=1&meta=${encodeURIComponent('meta-envelope')}`, {
+  method: 'POST', headers: { Cookie: alice, 'X-Ryadom': '1', 'Content-Type': 'application/octet-stream' }, body: ciphertext
+ });
+ assert.equal(upload.status, 201);
+ const fileMessage = await upload.json();
+ assert.equal(fileMessage.encrypted, true);
+ assert.equal(fileMessage.file.name, 'encrypted');
+ const file = await fetch(`${base}/files/${fileMessage.file.id}`, { headers: { Cookie: bob } });
+ assert.equal(file.status, 200);
+ assert.deepEqual(Buffer.from(await file.arrayBuffer()), ciphertext);
+ assert.equal((await fetch(`${base}/files/${fileMessage.file.id}`, { headers: { Cookie: stranger } })).status, 403);
 });
 
 test('protocol 3 clients are rejected with update required', async () => {

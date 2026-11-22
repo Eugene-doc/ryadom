@@ -16,4 +16,8 @@ test('0.5 E2E derives the same chat key and encrypts text', async () => {
  const safetyB = await e2ee.safetyNumber(bob.publicKey, alice.publicKey);
  assert.equal(safetyA, safetyB);
  assert.match(safetyA, /^[0-9A-F]{4}( [0-9A-F]{4}){7}$/);
+ const bytes = new TextEncoder().encode('encrypted attachment bytes');
+ const file = await e2ee.encryptBytes(aliceKey, bytes);
+ const decrypted = await e2ee.decryptBytes(bobKey, file.iv, file.data);
+ assert.equal(new TextDecoder().decode(decrypted), 'encrypted attachment bytes');
 });

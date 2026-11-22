@@ -101,7 +101,15 @@
   if (!value || value.v !== 1 || !value.iv || !value.data) throw new Error('Некорректный шифротекст');
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(value.iv) }, key, base64ToBytes(value.data));
   return decoder.decode(plain);
-}
+ }
+ async function encryptBytes(key, bytes) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, bytes));
+  return { iv: bytesToBase64(iv), data };
+ }
+ async function decryptBytes(key, iv, bytes) {
+  return new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: base64ToBytes(iv) }, key, bytes));
+ }
  async function sha256(text) { return new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(text))); }
  async function safetyNumber(first, second) {
   const material = [String(first), String(second)].sort().join('\n');
@@ -112,7 +120,7 @@
  function publicKeyFingerprint(publicKey) {
   return sha256(String(publicKey)).then(bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('').toUpperCase());
  }
- const api = { available, ensureIdentity, deriveChatKey, encryptText, decryptText, safetyNumber, publicKeyFingerprint, b64url, fromB64url };
+ const api = { available, ensureIdentity, deriveChatKey, encryptText, decryptText, encryptBytes, decryptBytes, safetyNumber, publicKeyFingerprint, b64url, fromB64url, bytesToBase64, base64ToBytes };
  if (typeof module !== 'undefined' && module.exports) module.exports = api;
  root.RyadomE2EE = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
