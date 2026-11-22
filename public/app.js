@@ -4,7 +4,7 @@ const icon = name => { const s=document.createElementNS('http://www.w3.org/2000/
 const el = (tag,cls,text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 let me=null, devices=[], messages=new Map(), chat=null, deleteTarget=null, clearRevision=0, clearOperationId=null, lastClearOperationId=null, lastClearNoticeOperation=null, stateGeneration=0, pairing=null, addresses=[], maxFile=512*1024*1024, events=null, online=false, filter='all', queue=[], sending=false, canLoadOlder=false, expiryTimer=null, toastTimer=null, syncing=false, pendingRequests=[], fingerprint='', storage=null, tlsEnabled=false;
 let e2eeIdentity=null, e2eeSession='', e2eePromise=null;
-let chats=[], activeChatId='legacy', chatKeys=new Map(), safetyNumbers=new Map();
+let chats=[], activeChatId='legacy', chatKeys=new Map(), safetyNumbers=new Map(), safetyConfirmed=new Set();
 const uuid=()=>{if(crypto.randomUUID)return crypto.randomUUID();const b=crypto.getRandomValues(new Uint8Array(16));b[6]=(b[6]&15)|64;b[8]=(b[8]&63)|128;return [...b].map((v,i)=>([4,6,8,10].includes(i)?'-':'')+v.toString(16).padStart(2,'0')).join('');};
 const sizeText=n=>n<1024?`${n} Б`:n<1024*1024?`${(n/1024).toFixed(0)} КБ`:`${(n/1024/1024).toFixed(n<10*1024*1024?1:0)} МБ`;
 function toast(text){$('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,4500);}
@@ -56,6 +56,17 @@ async function decryptPrivateMessage(message,key){
  try{message.plain=await RyadomE2EE.decryptText(key,message.text);}catch{message.plain='Не удалось расшифровать сообщение';}
  return message;
 }
+function safetyStoreKey(room){return 'ryadom-safety:'+(chat?.sessionId||'')+':'+room.id;}
+function safetyIsConfirmed(room){try{return safetyConfirmed.has(safetyStoreKey(room))||sessionStorage.getItem(safetyStoreKey(room))==='1';}catch{return safetyConfirmed.has(safetyStoreKey(room));}}
+function showSafetyDialog(room){
+ const number=safetyNumbers.get(room.id);if(!number)return;
+ $('safety-number').textContent=number;$('safety-dialog').dataset.chatId=room.id;
+ $('safety-dialog').showModal();
+}
+function markSafetyConfirmed(room){
+ const key=safetyStoreKey(room);safetyConfirmed.add(key);try{sessionStorage.setItem(key,'1');}catch{}
+ $('safety-dialog').close();toast('Safety number подтверждён для этого диалога');
+}
 async function switchChat(id){
  if(id===activeChatId)return;
  activeChatId=id;messages.clear();canLoadOlder=false;stateGeneration++;
@@ -70,7 +81,9 @@ async function switchChat(id){
    for(const m of list)messages.set(m.id,await decryptPrivateMessage(m,key));
    const seq=Math.max(0,...[...messages.values()].map(m=>m.seq));
    if(seq)await api(`/api/chats/${encodeURIComponent(id)}/read`,'POST',{seq});
-   $('e2ee-label').textContent='E2E · '+(safetyNumbers.get(id)||'safety number недоступен');
+   $('e2ee-label').textContent='E2E · '+(safetyNumbers.get(id)||'safety number недоступен');$('e2ee-label').title='Показать safety number';
+   renderChats();renderMessages(true);
+   if(!safetyIsConfirmed(room))showSafetyDialog(room);else return;
   }else{
    const list=await api('/api/messages');
    for(const m of list)messages.set(m.id,m);
@@ -244,6 +257,7 @@ $('pair-code').oninput=()=>{const s=$('pair-code').value.replace(/\D/g,'').slice
 function setFilter(next){filter=next;$('tab-all').classList.toggle('active',next==='all');$('tab-media').classList.toggle('active',next==='media');$('tab-all').setAttribute('aria-pressed',next==='all');$('tab-media').setAttribute('aria-pressed',next==='media');renderMessages(true);}
 $('tab-all').onclick=()=>setFilter('all');$('all-room').onclick=()=>{setFilter('all');switchChat('legacy');};$('tab-media').onclick=()=>setFilter('media');
 $('new-private-chat').onclick=openPrivateDialog;$('private-cancel').onclick=()=>$('private-dialog').close();$('private-cancel-x').onclick=()=>$('private-dialog').close();
+$('safety-confirm').onclick=()=>{const room=chatMeta($('safety-dialog').dataset.chatId);if(room)markSafetyConfirmed(room);else $('safety-dialog').close();};$('safety-later').onclick=()=>$('safety-dialog').close();$('safety-close').onclick=()=>$('safety-dialog').close();$('safety-copy').onclick=()=>copy($('safety-number').textContent);$('e2ee-label').onclick=()=>{const room=chatMeta();if(room&&room.type==='private')showSafetyDialog(room);};
 $('search-toggle').onclick=()=>{$('search-bar').hidden=!$('search-bar').hidden;if(!$('search-bar').hidden)$('search').focus();else{$('search').value='';renderMessages();}};$('search-close').onclick=()=>{$('search-bar').hidden=true;$('search').value='';renderMessages();};$('search').oninput=()=>renderMessages();
 $('load-older').onclick=async()=>{const a=$('scroll-area');const before=Math.min(...[...messages.values()].map(m=>m.seq));const previous=a.scrollHeight;const generation=stateGeneration;$('load-older').disabled=true;try{const page=await api(`/api/messages?before=${before}&chatId=${encodeURIComponent(activeChatId)}`);if(generation!==stateGeneration)return;const key=activeChatId==='legacy'?null:chatKeys.get(activeChatId);for(const m of page){if(key&&m.encrypted)await decryptPrivateMessage(m,key);messages.set(m.id,m);}canLoadOlder=page.length===100;renderMessages();a.scrollTop+=a.scrollHeight-previous;}catch(e){toast(e.message);}finally{$('load-older').disabled=false;}};
 function eventName(type){return {host_login:'вход главного',pair_request:'запрос на подключение',pair_approved:'подключение подтверждено',pair_rejected:'подключение отклонено',device_revoked:'устройство отозвано',logout:'выход',logout_all:'выход на всех'}[type]||type;}
