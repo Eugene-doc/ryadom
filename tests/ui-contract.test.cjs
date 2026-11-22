@@ -8,7 +8,7 @@ const html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
 const js = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
 
 test('0.3.0 UI exposes deletion, clear, downloads and version controls', () => {
- for (const id of ['delete-dialog', 'delete-confirm', 'header-clear-chat-button', 'clear-chat-button', 'clear-dialog', 'clear-confirm', 'downloads-button', 'app-version', 'chat-stats', 'forget-offline']) {
+ for (const id of ['delete-dialog', 'delete-confirm', 'header-clear-chat-button', 'clear-chat-button', 'clear-dialog', 'clear-confirm', 'downloads-button', 'new-private-chat', 'private-dialog', 'e2ee-label', 'app-version', 'chat-stats', 'forget-offline']) {
   assert.match(html, new RegExp(`id="${id}"`), `missing #${id}`);
  }
  assert.equal((html.match(/id="downloads-button"/g) || []).length, 1, 'downloads button must be unique');
